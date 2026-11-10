@@ -5,14 +5,46 @@
 //!
 //! Art is read from `$MCMAP_ART`, else `art/seed-map` under the current directory. Without it the
 //! map still runs, with no markers.
+//!
+//! The seed is `$MCMAP_SEED` (default: the reference capture's seed) and the version pack is
+//! `$MCMAP_PACK`, else the data directory's 26.3 pack. Without a pack the map shows the M0
+//! checkerboard.
 
 mod map;
 mod sprites;
 mod tiles;
 
 use map::Map;
+use mcmap_data::pack::{pack_path, RawPack};
 use rune::AppSpec;
 use std::path::PathBuf;
+use std::sync::Arc;
+use tiles::World;
+
+/// The reference capture's seed.
+const DEFAULT_SEED: i64 = -7556262131344217808;
+
+fn world() -> Option<Arc<World>> {
+    let seed = match std::env::var("MCMAP_SEED") {
+        Ok(s) => match s.trim().parse::<i64>() {
+            Ok(v) => v,
+            Err(_) => {
+                eprintln!("mcmap: MCMAP_SEED {s:?} is not a number; using {DEFAULT_SEED}");
+                DEFAULT_SEED
+            }
+        },
+        Err(_) => DEFAULT_SEED,
+    };
+    let path = std::env::var_os("MCMAP_PACK").map(PathBuf::from).unwrap_or_else(|| pack_path("26.3"));
+    let made = RawPack::read(&path).and_then(|p| mcmap_worldgen::Surface::new(&p, seed));
+    match made {
+        Ok(s) => Some(Arc::new(World::new(seed, s))),
+        Err(e) => {
+            eprintln!("mcmap: no biomes ({e}); showing the checkerboard. Make the pack with `cargo run -q -p xtask -- extract --version 26.3`.");
+            None
+        }
+    }
+}
 
 fn art_dir() -> PathBuf {
     std::env::var_os("MCMAP_ART").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("art/seed-map"))
@@ -26,7 +58,7 @@ fn init() -> Map {
             None
         }
     };
-    Map::new(sprites)
+    Map::new(sprites, world())
 }
 
 /// Headless scenes render tiles synchronously so a snapshot never shows a tile still in flight.

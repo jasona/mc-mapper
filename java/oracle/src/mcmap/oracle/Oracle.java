@@ -38,6 +38,7 @@ import net.minecraft.world.level.levelgen.densityfunction.SamplerContext;
  *   climate <seed> <x> <z> [y]                      the six quantized climate values and the biome
  *   grid    <seed> <x0> <z0> <w> <h> <step> <out>   biome ids for a w*h grid of cells, step blocks apart
  *   params  <out.json>                              the Overworld biome parameter table, in tree order
+ *   climgrid <seed> <x0> <z0> <w> <h> <step> <out>  raw surface climate values and biomes, for diff tests
  */
 public final class Oracle {
     /** Pass "surface" as y to evaluate at depth 0 instead of a fixed height. */
@@ -76,6 +77,7 @@ public final class Oracle {
             }
             case "grid" -> grid(args);
             case "params" -> params(args[1]);
+            case "climgrid" -> climgrid(args);
             default -> usage();
         }
         out.flush();
@@ -115,6 +117,52 @@ public final class Oracle {
             Holder<Biome> b = source.getNoiseBiome(t);
             return b.unwrapKey().map(k -> k.identifier().toString()).orElse("?");
         }
+    }
+
+    /**
+     * Surface climate grid: magic "MCCG", u32 w, u32 h, u32 n names, the names as u16-length
+     * UTF-8, then per cell (z outer, x inner) the five raw climate floats at the cell's quart
+     * corner and y 64 (temperature, humidity, continentalness, erosion, weirdness) and the u16
+     * surface biome. Biomes are looked up in that order, so the game's per-thread search hint
+     * follows the same path a test can replay.
+     */
+    private static void climgrid(String[] a) throws Exception {
+        World w = new World(Long.parseLong(a[1]));
+        int x0 = Integer.parseInt(a[2]), z0 = Integer.parseInt(a[3]);
+        int gw = Integer.parseInt(a[4]), gh = Integer.parseInt(a[5]), step = Integer.parseInt(a[6]);
+        Map<String, Integer> index = new HashMap<>();
+        List<String> names = new ArrayList<>();
+        float[] vals = new float[gw * gh * 5];
+        short[] cells = new short[gw * gh];
+        Climate.Sampler s = w.sampler;
+        for (int j = 0; j < gh; j++) {
+            for (int i = 0; i < gw; i++) {
+                int x = x0 + i * step, z = z0 + j * step;
+                int bx = (x >> 2) << 2, bz = (z >> 2) << 2;
+                int o = (j * gw + i) * 5;
+                vals[o] = s.temperature().sampleValue(bx, 64, bz);
+                vals[o + 1] = s.humidity().sampleValue(bx, 64, bz);
+                vals[o + 2] = s.continentalness().sampleValue(bx, 64, bz);
+                vals[o + 3] = s.erosion().sampleValue(bx, 64, bz);
+                vals[o + 4] = s.weirdness().sampleValue(bx, 64, bz);
+                String b = w.biome(x, SURFACE, z);
+                Integer k = index.get(b);
+                if (k == null) { k = names.size(); names.add(b); index.put(b, k); }
+                cells[j * gw + i] = (short) (int) k;
+            }
+        }
+        try (DataOutputStream o = new DataOutputStream(new BufferedOutputStream(new FileOutputStream(a[7])))) {
+            o.writeBytes("MCCG");
+            o.writeInt(gw);
+            o.writeInt(gh);
+            o.writeInt(names.size());
+            for (String n : names) o.writeUTF(n);
+            for (int c = 0; c < gw * gh; c++) {
+                for (int k = 0; k < 5; k++) o.writeFloat(vals[c * 5 + k]);
+                o.writeShort(cells[c]);
+            }
+        }
+        out.println("wrote " + gw + "x" + gh + " climate cells, " + names.size() + " biomes, to " + a[7]);
     }
 
     /**

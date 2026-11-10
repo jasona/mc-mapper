@@ -2,6 +2,7 @@
 //! map draws markers from. Nothing here depends on the UI.
 
 pub mod atlas;
+pub mod biomes;
 pub mod checker;
 pub mod pyramid;
 

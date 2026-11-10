@@ -9,10 +9,11 @@
 //! `k = zoom * scale * blocks_per_pixel` device pixels per tile pixel, always in (0.5, 1].
 
 use crate::sprites::Sprites;
-use crate::tiles::TileStore;
+use crate::tiles::{TileStore, World};
 use mcmap_tiles::pyramid::{blocks_per_pixel, Camera, TileKey, TILE};
 use rune::{Color, Cx, Drag, El, Live, LiveText, MagnifyEvent, Phase, Tx, WheelEvent, col, el, row, text};
 use std::cell::{Cell, RefCell};
+use std::sync::Arc;
 
 /// The reference capture's view (seed -7556262131344217808, Java 26.3): 1.25 px per block.
 pub const HOME: Camera = Camera { center: [2839.0, -1418.0], zoom: 1.25 };
@@ -41,7 +42,7 @@ pub struct Map {
 }
 
 impl Map {
-    pub fn new(sprites: Option<Sprites>) -> Map {
+    pub fn new(sprites: Option<Sprites>, world: Option<Arc<World>>) -> Map {
         Map {
             camera: HOME,
             pan: Live::new([0.0, 0.0]),
@@ -49,7 +50,7 @@ impl Map {
             inv_k: Live::new(1.0),
             readout: LiveText::new(""),
             shown: RefCell::new(None),
-            tiles: TileStore::new(),
+            tiles: TileStore::new(world),
             sprites,
             pan_at_press: Cell::new(HOME.center),
         }
@@ -176,7 +177,10 @@ pub fn view(s: &Map, cx: &mut Cx<Map>) -> El {
         .on_drag(|s: &mut Map, d: &mut Drag, tx: &mut Tx| s.drag(d, tx));
 
     let bar = row().key("bar").w_full().h(28.0).px(10.0).gap(16.0).items_center().fill(rgb(0.12, 0.12, 0.15))
-        .child(text("MC Mapper · M0 spike").color(rgb(0.9, 0.9, 0.92)))
+        .child(text(match &s.tiles.world {
+            Some(w) => format!("MC Mapper · 26.3 · seed {}", w.seed),
+            None => "MC Mapper · no version pack (checkerboard)".to_owned(),
+        }).color(rgb(0.9, 0.9, 0.92)))
         .child(text("x 00000000.0  z 00000000.0   000.000 px/block   level -00").live_text(&s.readout).color(rgb(0.65, 0.68, 0.72)));
     col().w_full().h_full().child(bar).child(canvas)
 }

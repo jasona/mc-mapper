@@ -1,7 +1,10 @@
 //! mcmap-cli spike                 find the running game, attach the agent, print your position
 //! mcmap-cli listen --token T      only listen (when the agent was loaded another way)
 //! mcmap-cli find                  show the running game process and its Java runtime
+//! mcmap-cli render --seed S ...   surface biome map to a PNG
+//! mcmap-cli calibrate --seed S    compare the biome core with a reference capture
 
+mod biomes;
 mod game;
 
 use clap::{Parser, Subcommand};
@@ -44,6 +47,48 @@ enum Cmd {
         #[arg(long, default_value_t = 0)]
         seconds: u64,
     },
+    /// Render the surface biome map of a seed to a PNG.
+    Render {
+        #[arg(long, allow_hyphen_values = true)]
+        seed: i64,
+        /// Centre block "x,z".
+        #[arg(long, default_value = "0,0", allow_hyphen_values = true)]
+        center: String,
+        /// Pixels per block (0.25 is one pixel per 4x4 cell).
+        #[arg(long, default_value_t = 0.25)]
+        ppb: f64,
+        #[arg(long, default_value_t = 1024)]
+        width: u32,
+        #[arg(long, default_value_t = 1024)]
+        height: u32,
+        #[arg(long, default_value = "26.3")]
+        version: String,
+        /// Version pack (default: the data directory's pack for --version).
+        #[arg(long)]
+        pack: Option<PathBuf>,
+        #[arg(long, default_value = "biomes.png")]
+        out: PathBuf,
+    },
+    /// Compare the biome core with a reference capture (default: the M0 capture's seed and view).
+    Calibrate {
+        #[arg(long, default_value_t = -7556262131344217808, allow_hyphen_values = true)]
+        seed: i64,
+        #[arg(long, default_value = "art/seed-map/reference/biomes.png")]
+        reference: PathBuf,
+        #[arg(long, default_value = "2839,-1418", allow_hyphen_values = true)]
+        center: String,
+        #[arg(long, default_value_t = 1.25)]
+        ppb: f64,
+        #[arg(long, default_value = "26.3")]
+        version: String,
+        #[arg(long)]
+        pack: Option<PathBuf>,
+    },
+}
+
+fn parse_center(s: &str) -> Result<[f64; 2], String> {
+    let (x, z) = s.split_once(',').ok_or("centre is \"x,z\"")?;
+    Ok([x.trim().parse().map_err(|_| "bad x")?, z.trim().parse().map_err(|_| "bad z")?])
 }
 
 fn main() -> ExitCode {
@@ -51,6 +96,12 @@ fn main() -> ExitCode {
         Cmd::Find => find(),
         Cmd::Spike { jar, pid, port, seconds } => spike(jar, pid, port, seconds),
         Cmd::Listen { port, token, seconds } => listen(port, token, seconds),
+        Cmd::Render { seed, center, ppb, width, height, version, pack, out } => parse_center(&center)
+            .and_then(|c| biomes::load(&version, pack, seed).and_then(|s| biomes::render(&s, c, ppb, width, height, &out))),
+        Cmd::Calibrate { seed, reference, center, ppb, version, pack } => parse_center(&center).and_then(|c| {
+            let s = biomes::load(&version, pack, seed)?;
+            if biomes::calibrate(&s, &reference, c, ppb)? { Ok(()) } else { Err("the biome core disagrees with the capture".into()) }
+        }),
     };
     match r {
         Ok(()) => ExitCode::SUCCESS,

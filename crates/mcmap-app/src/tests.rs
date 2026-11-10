@@ -20,7 +20,7 @@ fn atlas() -> Rgba {
 }
 
 fn runtime(scale: f32) -> Runtime<Map> {
-    let map = Map::new(Some(Sprites::from_atlas(&atlas())));
+    let map = Map::new(Some(Sprites::from_atlas(&atlas())), None);
     map.tiles.sync.set(true);
     let mut rt = Runtime::new(map, view, SIZE, Env::new(true, scale));
     settle(&mut rt);

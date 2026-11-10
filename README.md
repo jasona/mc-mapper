@@ -4,18 +4,20 @@ A local Minecraft Java seed map in Rust, drawn with [Rune](https://github.com/an
 later show your live position from the running game. The plan is in
 [`docs/implementation-plan.md`](docs/implementation-plan.md).
 
-Status: **M0** (spike, data and oracle). The map draws a stand-in checkerboard pyramid, not biomes yet.
+Status: **M1** (26.3 surface biomes). The map draws real surface biomes for a seed. The Rust biome core
+matches the game's own classes bit for bit (climate floats and biomes over 4.5M cells, 6 seeds) and the
+reference capture cell for cell. Structures, the depth layer and live position in the window come next.
 
 ## Layout
 
 | Path | What |
 | --- | --- |
 | `crates/mcmap-data` | `WorldId`, versions, launcher-install discovery, version-pack format, Java build helpers |
-| `crates/mcmap-worldgen` | Biome generation (M1). Only the `BiomeSampler` seam so far |
+| `crates/mcmap-worldgen` | Xoroshiro, Perlin/NormalNoise (single precision), climate density functions, the biome RTree |
 | `crates/mcmap-tiles` | Tile pyramid and `f64` camera, checkerboard tiles, atlas segmentation |
 | `crates/mcmap-live` | `PositionSource` seam, agent protocol and socket, F3+C parser, replay source |
 | `crates/mcmap-app` | The window (`mcmap`). The only crate that depends on Rune (pinned rev) |
-| `crates/mcmap-cli` | `mcmap-cli spike`, `listen`, `find` |
+| `crates/mcmap-cli` | `mcmap-cli spike`, `listen`, `find`, `render`, `calibrate` |
 | `xtask` | `cargo run -q -p xtask -- extract`, `oracle`, `agent`, `atlas` |
 | `java/oracle` | Dev-only harness that runs the game's own biome code from your client jar |
 | `java/agent` | The read-only in-game agent, plus a stand-in game for testing attach |
@@ -45,15 +47,23 @@ xtask = "run -q -p xtask --"
 
 ```sh
 cargo test --workspace                        # all headless tests
-cargo run -p mcmap-app --release              # the map window (reads art from ./art/seed-map)
+cargo run -p mcmap-app --release              # the map window (art from ./art/seed-map, pack from the data dir)
+MCMAP_SEED=<seed> cargo run -p mcmap-app --release   # another seed (default: the reference capture's)
+cargo run -p mcmap-cli --release -- render --seed <seed> --center 0,0 --ppb 0.25 --out biomes.png
+cargo run -p mcmap-cli --release -- calibrate        # the reference capture, cell for cell
 cargo run -p mcmap-app --release -- --snap out.png --scene home --scale 2   # headless snapshot
                                               # scenes: home, zoomed-out, zoomed-in, far
 cargo run -q -p xtask -- extract --version 26.3            # version pack -> ~/.local/share/mcmap/packs/26.3.mcpack
 cargo run -q -p xtask -- oracle -- biome -7556262131344217808 2839 -1418 surface
 cargo run -q -p xtask -- oracle -- grid <seed> <x0> <z0> <w> <h> <step> out.bin surface
 cargo run -q -p xtask -- agent                             # build target/java/mcmap-agent.jar and self-check it
+cargo run -q -p xtask -- oracle -- climgrid <seed> <x0> <z0> <w> <h> <step> out.bin   # diff-test data
 cargo run -q -p xtask -- atlas                             # art/seed-map/map/marker-crops.json (labels by hand)
 ```
+
+Run `extract` once before the map: without a pack the window falls back to the checkerboard. The
+differential test is `MCMAP_PACK=<pack> MCMAP_DIFF=<dir of climgrid files> cargo test -p mcmap-worldgen
+--release --test oracle -- --ignored` (see the test's header for file naming).
 
 Map controls: drag to pan, mouse wheel zooms about the pointer, two-finger trackpad pans,
 Ctrl + wheel or pinch zooms.

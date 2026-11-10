@@ -1,6 +1,6 @@
 [package]
 name = "mcmap-cli"
-description = "Command-line tools: the live-position spike, the agent listener. PNG export and calibrate arrive in M1."
+description = "Command-line tools: the live-position spike, the agent listener. biome PNG export and calibration."
 edition.workspace = true
 license.workspace = true
 version.workspace = true
@@ -14,3 +14,7 @@ path = "src/main.rs"
 mcmap-data.workspace = true
 mcmap-live.workspace = true
 clap.workspace = true
+mcmap-worldgen.workspace = true
+mcmap-tiles.workspace = true
+image.workspace = true
+rayon.workspace = true
