@@ -1,0 +1,17 @@
+[package]
+name = "mcmap-app"
+description = "The map window. The only crate that depends on Rune."
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "mcmap"
+path = "src/main.rs"
+
+[dependencies]
+mcmap-tiles.workspace = true
+mcmap-live.workspace = true
+rune.workspace = true
+rayon.workspace = true

@@ -1,0 +1,4 @@
+Agent-Class: mcmap.agent.Agent
+Premain-Class: mcmap.agent.Agent
+Can-Redefine-Classes: false
+Can-Retransform-Classes: false

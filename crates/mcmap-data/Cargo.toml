@@ -1,0 +1,13 @@
+[package]
+name = "mcmap-data"
+description = "World identity, version handling, launcher-install discovery and the version-pack format. No UI, no worldgen."
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+postcard.workspace = true
+zstd.workspace = true

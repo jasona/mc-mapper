@@ -1,0 +1,10 @@
+/target
+/java/*/build
+/out
+# Chunkbase-derived art: personal use only, never in a public repo or release.
+/art/
+# Version packs and oracle dumps are Mojang's data: generated locally, never committed.
+/packs/
+*.mcpack
+# The game code the oracle runs writes its log4j output here.
+logs/

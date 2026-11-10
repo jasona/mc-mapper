@@ -1,0 +1,12 @@
+[package]
+name = "mcmap-live"
+description = "Live player position: the PositionSource seam, the replay source and the agent socket. Headless."
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+publish.workspace = true
+
+[dependencies]
+mcmap-data.workspace = true
+serde.workspace = true
+serde_json.workspace = true

@@ -1,0 +1,10 @@
+[package]
+name = "mcmap-worldgen"
+description = "Multi-noise biome generation driven by version packs. M1 fills this in."
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+publish.workspace = true
+
+[dependencies]
+mcmap-data.workspace = true
