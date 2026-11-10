@@ -5,7 +5,7 @@ use mcmap_tiles::pyramid::TileKey;
 use rune::{Env, MagnifyEvent, Runtime, WheelEvent};
 
 const SIZE: (f32, f32) = (800.0, 528.0);
-const BAR: f32 = 28.0;
+use crate::map::BAR;
 
 fn atlas() -> Rgba {
     // Two opaque 4x3 sprites side by side on a transparent 12x5 atlas.
@@ -125,4 +125,79 @@ fn markers_keep_their_screen_size_and_follow_the_camera() {
             settle(&mut rt);
         }
     }
+}
+
+fn fix_at(x: f64, z: f64) -> mcmap_live::Fix {
+    mcmap_live::Fix {
+        world: Default::default(),
+        dimension: Some(mcmap_data::Dimension::Overworld),
+        dimension_key: "minecraft:overworld".into(),
+        pos: [x, 64.0, z],
+        yaw: 0.0,
+        pitch: 0.0,
+        taken_at: std::time::SystemTime::now(),
+        source: mcmap_live::SourceKind::Replay,
+    }
+}
+
+/// Run frames the way the app does: poll, then draw.
+fn poll_frames(rt: &mut Runtime<Map>) {
+    for _ in 0..10 {
+        rt.update_if(|s, tx| s.take_fixes(tx));
+        settle(rt);
+    }
+}
+
+#[test]
+fn the_player_marker_tracks_fixes_and_follow_moves_the_camera() {
+    let mut rt = runtime(1.0);
+    let (tx, rx) = std::sync::mpsc::channel();
+    rt.state.fixes = Some(rx);
+    tx.send(fix_at(2850.0, -1400.0)).unwrap();
+    poll_frames(&mut rt);
+    let m = rect(&rt, "player");
+    assert!(near([m[0] + m[2] / 2.0, m[1] + m[3] / 2.0], expected(&rt, [2850.0, -1400.0])), "marker at {m:?}");
+
+    tx.send(fix_at(2852.0, -1401.0)).unwrap();
+    poll_frames(&mut rt);
+    let m = rect(&rt, "player");
+    assert!(near([m[0] + m[2] / 2.0, m[1] + m[3] / 2.0], expected(&rt, [2852.0, -1401.0])), "marker at {m:?}");
+
+    // Following: the camera centres on the player, even after a long move.
+    rt.state.follow = true;
+    tx.send(fix_at(9000.0, 4000.0)).unwrap();
+    poll_frames(&mut rt);
+    assert_eq!(rt.state.camera.center, [9000.0, 4000.0]);
+    let m = rect(&rt, "player");
+    assert!(near([m[0] + m[2] / 2.0, m[1] + m[3] / 2.0], [SIZE.0 / 2.0, BAR + (SIZE.1 - BAR) / 2.0]), "marker at {m:?}");
+
+    // Dragging the map stops following.
+    rt.wheel_event(WheelEvent::new(-30.0, 0.0).at(400.0, 250.0).precise(true));
+    settle(&mut rt);
+    assert!(!rt.state.follow);
+}
+
+#[test]
+fn queued_tiles_nobody_looks_at_are_dropped() {
+    let store = crate::tiles::TileStore::new(None);
+    // Ask for far more tiles than the workers can finish, then for only a few.
+    store.begin_frame();
+    for x in 0..400 {
+        store.request(TileKey { level: -3, x, z: 0 }, x as f64);
+    }
+    store.end_frame();
+    store.begin_frame();
+    for x in 0..3 {
+        store.request(TileKey { level: -3, x, z: 0 }, x as f64);
+    }
+    store.end_frame();
+    assert!(store.queued() <= 3, "{} tiles still queued", store.queued());
+}
+
+#[test]
+fn hover_reads_the_block_under_the_pointer() {
+    let rt = runtime(1.0);
+    let size = [SIZE.0 as f64, (SIZE.1 - BAR) as f64];
+    let s = rt.state.hover_at([size[0] / 2.0, size[1] / 2.0]);
+    assert_eq!(s, format!("{}, {}", HOME.center[0].floor() as i64, HOME.center[1].floor() as i64));
 }

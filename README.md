@@ -4,9 +4,10 @@ A local Minecraft Java seed map in Rust, drawn with [Rune](https://github.com/an
 later show your live position from the running game. The plan is in
 [`docs/implementation-plan.md`](docs/implementation-plan.md).
 
-Status: **M1** (26.3 surface biomes). The map draws real surface biomes for a seed. The Rust biome core
-matches the game's own classes bit for bit (climate floats and biomes over 4.5M cells, 6 seeds) and the
-reference capture cell for cell. Structures, the depth layer and live position in the window come next.
+Status: **M2** (map app). The window draws 26.3 surface biomes for any seed. Its headless snapshot of the
+reference view matches `reference/biomes.png` in every cell, and the Rust biome core matches the game's
+own classes bit for bit (10.8M cells, 12 seeds). Structures (M3) and the live game position in the window
+(M5/M6) come next; `mcmap-cli spike` already shows the live position in a terminal.
 
 ## Layout
 
@@ -64,6 +65,17 @@ cargo run -q -p xtask -- atlas                             # art/seed-map/map/ma
 Run `extract` once before the map: without a pack the window falls back to the checkerboard. The
 differential test is `MCMAP_PACK=<pack> MCMAP_DIFF=<dir of climgrid files> cargo test -p mcmap-worldgen
 --release --test oracle -- --ignored` (see the test's header for file naming).
+
+In the window: type a seed (or any text, hashed the way the game does) in the seed field and press
+Return, or paste a seed-map link (`...#seed=...&x=...&z=...`) to jump there. Hover shows the block and
+biome under the pointer. The feature picker's toggles are in place for M3; only Biomes does anything
+yet. `MCMAP_REPLAY=docs/replay-sample.ndjson` plays a recorded path as the player position, with the
+marker and a Follow button.
+
+```sh
+cargo run -p mcmap-app --release -- --snap out.png --scene manifest --scale 1
+cargo run -p mcmap-cli --release -- snapcheck out.png     # the M2 gate: every cell matches the capture
+```
 
 Map controls: drag to pan, mouse wheel zooms about the pointer, two-finger trackpad pans,
 Ctrl + wheel or pinch zooms.

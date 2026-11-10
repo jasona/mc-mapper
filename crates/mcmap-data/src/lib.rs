@@ -5,6 +5,7 @@
 
 pub mod install;
 pub mod java;
+pub mod link;
 pub mod pack;
 mod world;
 

@@ -84,6 +84,22 @@ enum Cmd {
         #[arg(long)]
         pack: Option<PathBuf>,
     },
+    /// The M2 gate: compare a window snapshot (`mcmap --snap out.png --scene manifest --scale 1`)
+    /// with the reference capture, cell for cell.
+    Snapcheck {
+        snap: PathBuf,
+        #[arg(long, default_value = "art/seed-map/reference/biomes.png")]
+        reference: PathBuf,
+        /// Toolbar height above the map in the snapshot, in pixels.
+        #[arg(long, default_value_t = 40)]
+        top: u32,
+        #[arg(long, default_value = "2839,-1418", allow_hyphen_values = true)]
+        center: String,
+        #[arg(long, default_value_t = 1.25)]
+        ppb: f64,
+        #[arg(long, default_value_t = 2)]
+        tolerance: u8,
+    },
 }
 
 fn parse_center(s: &str) -> Result<[f64; 2], String> {
@@ -101,6 +117,9 @@ fn main() -> ExitCode {
         Cmd::Calibrate { seed, reference, center, ppb, version, pack } => parse_center(&center).and_then(|c| {
             let s = biomes::load(&version, pack, seed)?;
             if biomes::calibrate(&s, &reference, c, ppb)? { Ok(()) } else { Err("the biome core disagrees with the capture".into()) }
+        }),
+        Cmd::Snapcheck { snap, reference, top, center, ppb, tolerance } => parse_center(&center).and_then(|c| {
+            if biomes::snapcheck(&snap, &reference, top, c, ppb, tolerance)? { Ok(()) } else { Err("the snapshot differs from the capture".into()) }
         }),
     };
     match r {

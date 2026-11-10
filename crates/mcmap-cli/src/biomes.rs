@@ -91,3 +91,36 @@ pub fn calibrate(s: &Surface, reference: &Path, center: [f64; 2], ppb: f64) -> R
     }
     Ok(agree == known && known > 0)
 }
+
+/// The M2 gate: compare a window snapshot with a reference capture at every 4x4 cell centre.
+/// `top` is the toolbar height in the snapshot (the capture has none); both images show the same
+/// view at `ppb` pixels per block. Colours match when every channel is within `tolerance`.
+pub fn snapcheck(snap: &Path, reference: &Path, top: u32, center: [f64; 2], ppb: f64, tolerance: u8) -> Result<bool, String> {
+    let load = |p: &Path| Rgba::decode(&std::fs::read(p).map_err(|e| format!("{}: {e}", p.display()))?);
+    let (s, r) = (load(snap)?, load(reference)?);
+    if s.w != r.w || s.h < r.h + top {
+        return Err(format!("snapshot is {}x{}, expected {}x{} plus a {top} px toolbar", s.w, s.h, r.w, r.h));
+    }
+    let (w, h) = (r.w as f64, r.h as f64);
+    let block = |p: f64, size: f64, c: f64| c + (p - size / 2.0) / ppb;
+    let (qx0, qx1) = ((block(2.0, w, center[0]) / 4.0).ceil() as i32, (block(w - 2.0, w, center[0]) / 4.0).floor() as i32);
+    let (qz0, qz1) = ((block(2.0, h, center[1]) / 4.0).ceil() as i32, (block(h - 2.0, h, center[1]) / 4.0).floor() as i32);
+    let (mut total, mut same) = (0usize, 0usize);
+    let mut first = None;
+    for qz in qz0..qz1 {
+        for qx in qx0..qx1 {
+            let (bx, bz) = (qx as f64 * 4.0 + 2.0, qz as f64 * 4.0 + 2.0);
+            let (px, py) = (((bx - center[0]) * ppb + w / 2.0) as u32, ((bz - center[1]) * ppb + h / 2.0) as u32);
+            let a = &r.px[((py * r.w + px) * 4) as usize..][..3];
+            let b = &s.px[(((py + top) * s.w + px) * 4) as usize..][..3];
+            total += 1;
+            if a.iter().zip(b).all(|(x, y)| x.abs_diff(*y) <= tolerance) {
+                same += 1;
+            } else if first.is_none() {
+                first = Some(format!("block ({bx}, {bz}) at pixel ({px}, {py}): reference {a:?}, snapshot {b:?}"));
+            }
+        }
+    }
+    println!("{same}/{total} cells match ({:.3}%){}", 100.0 * same as f64 / total.max(1) as f64, first.map(|f| format!("; first difference {f}")).unwrap_or_default());
+    Ok(same == total && total > 0)
+}

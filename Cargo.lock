@@ -1750,6 +1750,8 @@ dependencies = [
  "mcmap-worldgen",
  "rayon",
  "rune",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
