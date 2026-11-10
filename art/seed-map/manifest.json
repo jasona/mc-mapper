@@ -1,0 +1,296 @@
+{
+  "view": {
+    "seed": "-7556262131344217808",
+    "dimension": "overworld",
+    "x": 2839,
+    "z": -1418,
+    "zoom": 1.08,
+    "biomeHeight": "surface",
+    "terrain": false,
+    "gridLines": false,
+    "edition": "Java",
+    "version": "26.3"
+  },
+  "assets": [
+    {
+      "file": "map/marker-atlas.webp",
+      "role": "map-marker-atlas",
+      "capture": "original-file",
+      "width": 253,
+      "height": 212
+    },
+    {
+      "file": "ui/feature-atlas.webp",
+      "role": "feature-picker-atlas",
+      "capture": "original-file",
+      "width": 242,
+      "height": 88
+    },
+    {
+      "file": "ui/button-atlas.png",
+      "role": "button-atlas",
+      "capture": "original-file",
+      "width": 24,
+      "height": 496
+    },
+    {
+      "file": "ui/icon-mode-toggle.png",
+      "role": "show-icons-button",
+      "capture": "original-file",
+      "width": 16,
+      "height": 22
+    },
+    {
+      "file": "ui/page-texture.png",
+      "role": "optional-page-background",
+      "capture": "original-file",
+      "width": 6,
+      "height": 6
+    },
+    {
+      "file": "ui/content-texture.png",
+      "role": "optional-content-background",
+      "capture": "original-file",
+      "width": 157,
+      "height": 130
+    },
+    {
+      "file": "reference/biomes.png",
+      "role": "rendered-biome-layer",
+      "capture": "browser-render",
+      "width": 1133,
+      "height": 566
+    },
+    {
+      "file": "reference/features.png",
+      "role": "rendered-transparent-feature-layer",
+      "capture": "browser-render",
+      "width": 1133,
+      "height": 566
+    },
+    {
+      "file": "reference/map-view.png",
+      "role": "composited-map-view",
+      "capture": "layer-composite",
+      "width": 1133,
+      "height": 566
+    }
+  ],
+  "featurePickerSprites": {
+    "file": "ui/feature-atlas.webp",
+    "origin": "top-left",
+    "units": "pixels",
+    "rectangles": [
+      {
+        "label": "Biomes",
+        "x": 66,
+        "y": 0,
+        "width": 22,
+        "height": 22
+      },
+      {
+        "label": "Spawn Point",
+        "x": 154,
+        "y": 44,
+        "width": 22,
+        "height": 22
+      },
+      {
+        "label": "Slime Chunk",
+        "x": 132,
+        "y": 44,
+        "width": 22,
+        "height": 22
+      },
+      {
+        "label": "Village",
+        "x": 88,
+        "y": 66,
+        "width": 22,
+        "height": 22
+      },
+      {
+        "label": "Ancient City",
+        "x": 44,
+        "y": 0,
+        "width": 22,
+        "height": 22
+      },
+      {
+        "label": "Dungeon",
+        "x": 176,
+        "y": 0,
+        "width": 22,
+        "height": 22
+      },
+      {
+        "label": "Stronghold",
+        "x": 176,
+        "y": 44,
+        "width": 22,
+        "height": 22
+      },
+      {
+        "label": "Woodland Mansion",
+        "x": 132,
+        "y": 22,
+        "width": 22,
+        "height": 22
+      },
+      {
+        "label": "Ocean Monument",
+        "x": 198,
+        "y": 22,
+        "width": 22,
+        "height": 22
+      },
+      {
+        "label": "Pillager Outpost",
+        "x": 44,
+        "y": 44,
+        "width": 22,
+        "height": 22
+      },
+      {
+        "label": "Mineshaft",
+        "x": 154,
+        "y": 22,
+        "width": 22,
+        "height": 22
+      },
+      {
+        "label": "Ruined Portal Overworld",
+        "x": 88,
+        "y": 44,
+        "width": 22,
+        "height": 22
+      },
+      {
+        "label": "Jungle Temple",
+        "x": 88,
+        "y": 22,
+        "width": 22,
+        "height": 22
+      },
+      {
+        "label": "Desert Temple",
+        "x": 132,
+        "y": 0,
+        "width": 22,
+        "height": 22
+      },
+      {
+        "label": "Witch Hut",
+        "x": 110,
+        "y": 66,
+        "width": 22,
+        "height": 22
+      },
+      {
+        "label": "Buried Treasure",
+        "x": 88,
+        "y": 0,
+        "width": 22,
+        "height": 22
+      },
+      {
+        "label": "Shipwreck",
+        "x": 110,
+        "y": 44,
+        "width": 22,
+        "height": 22
+      },
+      {
+        "label": "Igloo",
+        "x": 66,
+        "y": 22,
+        "width": 22,
+        "height": 22
+      },
+      {
+        "label": "Ocean Ruins",
+        "x": 220,
+        "y": 22,
+        "width": 22,
+        "height": 22
+      },
+      {
+        "label": "Fossil",
+        "x": 22,
+        "y": 22,
+        "width": 22,
+        "height": 22
+      },
+      {
+        "label": "Cheese Cave",
+        "x": 110,
+        "y": 0,
+        "width": 22,
+        "height": 22
+      },
+      {
+        "label": "Ravine",
+        "x": 66,
+        "y": 44,
+        "width": 22,
+        "height": 22
+      },
+      {
+        "label": "Lava Pool",
+        "x": 110,
+        "y": 22,
+        "width": 22,
+        "height": 22
+      },
+      {
+        "label": "Amethyst Geode",
+        "x": 22,
+        "y": 0,
+        "width": 22,
+        "height": 22
+      },
+      {
+        "label": "Enchanted Golden Apple",
+        "x": 44,
+        "y": 22,
+        "width": 22,
+        "height": 22
+      },
+      {
+        "label": "Ore Veins",
+        "x": 0,
+        "y": 44,
+        "width": 22,
+        "height": 22
+      },
+      {
+        "label": "Desert Well",
+        "x": 154,
+        "y": 0,
+        "width": 22,
+        "height": 22
+      },
+      {
+        "label": "Trail Ruins",
+        "x": 198,
+        "y": 44,
+        "width": 22,
+        "height": 22
+      },
+      {
+        "label": "Trial Chamber",
+        "x": 220,
+        "y": 44,
+        "width": 22,
+        "height": 22
+      },
+      {
+        "label": "Abandoned Camp",
+        "x": 0,
+        "y": 0,
+        "width": 22,
+        "height": 22
+      }
+    ]
+  }
+}

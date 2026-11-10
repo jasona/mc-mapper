@@ -28,10 +28,9 @@ candidates, 7 seeds; mineshafts 97.5%). Nether fortresses, bastions and Nether r
 | `java/oracle` | Dev-only harness that runs the game's own biome code from your client jar |
 | `java/agent` | The read-only in-game agent, plus a stand-in game for testing attach |
 
-The `.gitignore` keeps `art/`, packs and build output out.
-
-`art/` (Chunkbase-derived, personal use only) and version packs (Mojang's data) are git-ignored. Keep
-them out of any public repo.
+`art/seed-map` holds the map's commissioned art (marker and feature atlases, UI textures) and the
+reference captures the gates test against. Version packs are Mojang's data: they are generated
+locally and git-ignored, as is build output.
 
 ## Requirements
 

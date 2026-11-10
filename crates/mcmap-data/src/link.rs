@@ -87,7 +87,7 @@ mod tests {
 
     #[test]
     fn links() {
-        let l = parse_link("https://www.chunkbase.com/apps/seed-map#seed=-7556262131344217808&platform=java_26_3&dimension=overworld&x=2839&z=-1418&zoom=1.08").unwrap();
+        let l = parse_link("https://example.com/seed-map#seed=-7556262131344217808&platform=java_26_3&dimension=overworld&x=2839&z=-1418&zoom=1.08").unwrap();
         assert_eq!(l.seed, Some(-7556262131344217808));
         assert_eq!(l.dimension, Some(Dimension::Overworld));
         assert_eq!((l.x, l.z), (Some(2839.0), Some(-1418.0)));

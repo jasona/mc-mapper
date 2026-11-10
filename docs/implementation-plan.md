@@ -44,9 +44,9 @@ The captures are precise enough to test against. Biome cells are exactly 5 px wi
 - **Palette:** 9 of the 14 colors match the cubiomes table exactly, and a tenth matches the older Amidst value for taiga. The other 4 are learned from the capture once the generator labels those cells.
 - **Structures:** the feature layer shows one ancient city, two trial chambers, two ruined portals and the slime chunks. The ancient city marker sits at about x 3128, z -1352.
 
-### Keeping the art local
+### The art
 
-The manifest marks the atlases and textures as original files from Chunkbase. That works for a tool that stays on your machine. Keep `art/` out of any public repo or release. The asset-pack interface lets another icon set replace it if the app is ever shared.
+The atlases and textures in `art/seed-map` were made for this project and are checked in with the code. The asset-pack interface lets another icon set replace them.
 
 ## Rune: what it is and how it fits
 
@@ -269,7 +269,7 @@ Chunk and region grids are drawn as Rune vector shapes over the tiles, not baked
 
 Controls use `rune-kit` components: seed field, version and dimension pickers, search, and coordinate jump. The feature picker is a row of toggles drawn from the feature atlas. Toolbar glyphs come from the button atlas, and from M4 the page and content textures back the window and side panel.
 
-Pasting a Chunkbase link sets seed, version, dimension, position and zoom from its fragment. The same state serializes to the app's own link format.
+Pasting a seed-map link sets seed, version, dimension, position and zoom from its fragment. The same state serializes to the app's own link format.
 
 Every view is reachable headless through `--snap`, so golden images of fixed seeds run in CI.
 
@@ -395,7 +395,6 @@ M5 depends only on M2, so the live track can run in parallel with M3 and M4. The
 | Rune is pre-release | API churn, no upstream fixes on request | Pinned rev, one dependent crate, compositor hook as escape hatch. |
 | Mojang ships several drops a year | New density-function types or placement rules. 26.4 snapshots are already on your disk | Data-driven packs. The pack compiler names what is unimplemented. |
 | Terrain-dependent structures | Some icons mark candidates that did not generate | Shown as "likely". Full terrain evaluation stays out of scope. |
-| The art is Chunkbase's | It cannot be redistributed | Keep `art/` out of public repos and releases. The asset-pack interface allows a swap. |
 | Pixel-art sprites on dense displays | Blur under bilinear sampling | Integer nearest-neighbor enlargement before upload. |
 | One reference view | The palette covers only the 14 biomes in the capture | cubiomes colors fill the rest. More captures can be calibrated the same way. |
 | The live route is untested | The findings come from reading the jar and Java's documentation, not from a run | The M0 spike attaches a trivial agent to your running game before anything depends on it. |
@@ -411,7 +410,7 @@ These are the assumptions I made. Tell me which are wrong.
 - [ ] The map may attach a read-only Java agent to your running game. No Fabric and no launcher change.
 - [ ] Your Realm is the main target. Singleplayer worlds wait until M7.
 - [ ] The seed in your link is the Realm's seed. If not, the Realm owner or an operator can get it with `/seed`.
-- [ ] This is a personal tool, not a public release. A public release changes packaging and naming, and needs different art.
+- [ ] This is a personal tool, not a public release. A public release changes packaging and naming.
 
 ## Sources
 
@@ -419,7 +418,6 @@ Pages read for this plan, on 2026-11-09.
 
 - [Rune repository and core docs](https://github.com/anomalyco/rune)
 - [cubiomes](https://github.com/Cubitect/cubiomes), version list in `biomes.h` and color table in `util.c`
-- [Chunkbase Terms of Use](https://www.chunkbase.com/terms-of-use)
 - [Minecraft Usage Guidelines](https://www.minecraft.net/en-us/usage-guidelines)
 - Minecraft release notes for [26.3](https://www.minecraft.net/en-us/article/minecraft-java-edition-26-3), [26.2](https://www.minecraft.net/en-us/article/minecraft-java-edition-26-2), [26.1](https://www.minecraft.net/en-us/article/minecraft-java-edition-26-1) and [1.21.9](https://www.minecraft.net/en-us/article/minecraft-java-edition-1-21-9)
 - [BisectHosting 26.3 snapshot summary](https://www.bisecthosting.com/blog/minecraft-26-3-release-date-patch-notes-more), third-party
