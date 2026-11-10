@@ -252,6 +252,13 @@ pub struct Builder<'a> {
     pub seed: i64,
 }
 
+/// A worldgen JSON file of the pack by kind and id (`biome`, `minecraft:desert`).
+pub fn json_of(files: &Files, kind: &str, id: &str) -> Result<Value, String> {
+    let path = file_of(kind, id);
+    let text = files.get(&path).ok_or_else(|| format!("the pack has no {path}"))?;
+    serde_json::from_str(text).map_err(|e| format!("{path}: {e}"))
+}
+
 fn file_of(kind: &str, id: &str) -> String {
     let (ns, path) = id.split_once(':').unwrap_or(("minecraft", id));
     format!("data/{ns}/worldgen/{kind}/{path}.json")

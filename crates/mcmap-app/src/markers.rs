@@ -12,6 +12,7 @@
 
 use mcmap_data::pack::RawPack;
 use mcmap_data::Dimension;
+use mcmap_worldgen::decoration::Decorations;
 use mcmap_worldgen::structure::{Found, Placement, Structures};
 use mcmap_worldgen::world::{SpawnFinder, World};
 use rune::Waker;
@@ -55,6 +56,12 @@ pub const KINDS: &[Kind] = &[
     Kind { label: "Trail Ruins", ids: &["trail_ruins"], sprite: 44 },
     Kind { label: "Trial Chamber", ids: &["trial_chambers"], sprite: 65 },
     Kind { label: "Abandoned Camp", ids: &["abandoned_camp_*"], sprite: 1 },
+    // Decoration features: candidates from the game's placement rules (see
+    // mcmap_worldgen::decoration), always marked likely.
+    Kind { label: "Amethyst Geode", ids: &["amethyst_geode"], sprite: 52 },
+    Kind { label: "Fossil", ids: &["fossil_upper", "fossil_lower"], sprite: 55 },
+    Kind { label: "Lava Pool", ids: &["lake_lava_surface"], sprite: 68 },
+    Kind { label: "Desert Well", ids: &["desert_well"], sprite: 53 },
     Kind { label: "Nether Fortress", ids: &["fortress"], sprite: 32 },
     Kind { label: "Bastion Remnant", ids: &["bastion_remnant"], sprite: 67 },
     Kind { label: "Ruined Portal Nether", ids: &["ruined_portal_nether"], sprite: 41 },
@@ -125,7 +132,13 @@ pub struct Engine {
     pub structures: Structures,
     /// The Overworld's spawn search; none in the Nether and the End.
     pub spawn: Option<SpawnFinder>,
+    /// Decoration features with a layer, if the pack has the feature order.
+    pub decorations: Option<Decorations>,
+    zoom: i64,
 }
+
+/// The placed features that have a layer.
+pub const DECORATIONS: &[&str] = &["minecraft:amethyst_geode", "minecraft:fossil_upper", "minecraft:fossil_lower", "minecraft:lake_lava_surface", "minecraft:desert_well"];
 
 impl Engine {
     pub fn new(pack: &RawPack, seed: i64, dimension: Dimension) -> Result<Engine, String> {
@@ -136,7 +149,11 @@ impl Engine {
         let world = World::for_world(pack, seed, dimension, preset)?;
         let structures = Structures::new(&pack.files, world.surface.names())?;
         let spawn = if dimension == Dimension::Overworld { Some(SpawnFinder::new(&pack.files, seed, preset)?) } else { None };
-        Ok(Engine { world, structures, spawn })
+        let decorations = Decorations::new(&pack.files, dimension, world.surface.names(), DECORATIONS)
+            .map_err(|e| eprintln!("mcmap: decoration features: {e}"))
+            .ok()
+            .filter(|d| !d.features.is_empty());
+        Ok(Engine { world, structures, spawn, decorations, zoom: mcmap_data::seeds::zoom_seed(seed) })
     }
 
     /// Every random-spread structure in the region.
@@ -145,6 +162,21 @@ impl Engine {
         let mut out = Vec::new();
         for set in &self.structures.sets {
             out.extend(self.structures.in_area(&self.world, set, cx0, cz0, cx0 + REGION - 1, cz0 + REGION - 1));
+        }
+        out.extend(self.decorations_in(cx0, cz0));
+        out
+    }
+
+    /// Decoration feature candidates of the region starting at chunk (cx0, cz0).
+    fn decorations_in(&self, cx0: i32, cz0: i32) -> Vec<Found> {
+        let Some(d) = &self.decorations else { return Vec::new() };
+        let mut out = Vec::new();
+        for cz in cz0..cz0 + REGION {
+            for cx in cx0..cx0 + REGION {
+                for c in d.chunk(&self.world, self.zoom, cx, cz) {
+                    out.push(Found { structure: c.feature, chunk: (cx, cz), pos: c.pos, likely: true, marker: (c.pos.0, c.pos.2) });
+                }
+            }
         }
         out
     }
@@ -166,6 +198,7 @@ impl Engine {
     /// `max_regions` rings. Ring sets are not searched here (see [`Engine::strongholds`]).
     pub fn nearest(&self, kind: &Kind, x: f64, z: f64, max_regions: i32) -> Option<Found> {
         let sets: Vec<_> = self.structures.sets.iter().filter(|s| s.entries.iter().any(|e| kind.covers(&e.0.id))).collect();
+        let decorations = self.decorations.as_ref().is_some_and(|d| d.features.iter().any(|f| kind.covers(&f.id)));
         let span = (REGION * 16) as f64;
         let (rx, rz) = ((x / span).floor() as i32, (z / span).floor() as i32);
         let mut best: Option<(f64, Found)> = None;
@@ -182,8 +215,9 @@ impl Engine {
                         continue;
                     }
                     let (cx0, cz0) = ((rx + dx) * REGION, (rz + dz) * REGION);
-                    for set in &sets {
-                        for f in self.structures.in_area(&self.world, set, cx0, cz0, cx0 + REGION - 1, cz0 + REGION - 1) {
+                    let decs = if decorations { self.decorations_in(cx0, cz0) } else { Vec::new() };
+                    for f in sets.iter().flat_map(|set| self.structures.in_area(&self.world, set, cx0, cz0, cx0 + REGION - 1, cz0 + REGION - 1)).chain(decs) {
+                        {
                             if !kind.covers(&f.structure) {
                                 continue;
                             }

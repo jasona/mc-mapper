@@ -50,6 +50,11 @@ impl Xoroshiro {
         }
     }
 
+    /// The two state words.
+    pub fn parts(&self) -> (u64, u64) {
+        (self.lo, self.hi)
+    }
+
     pub fn next_long(&mut self) -> u64 {
         let (s0, mut s1) = (self.lo, self.hi);
         let r = s0.wrapping_add(s1).rotate_left(17).wrapping_add(s0);

@@ -54,22 +54,30 @@ import net.minecraft.world.level.storage.LevelStorageSource;
 final class Structs {
     private static net.minecraft.resources.ResourceKey<Level> level = Level.OVERWORLD;
 
-    static void run(HolderLookup.Provider reg, PrintStream log, String[] a) throws Exception {
-        long seed = Long.parseLong(a[1]);
-        int cx0 = Integer.parseInt(a[2]), cz0 = Integer.parseInt(a[3]);
-        int cx1 = Integer.parseInt(a[4]), cz1 = Integer.parseInt(a[5]);
-        // Load the worldgen registries from the vanilla data pack with tags bound, the way
-        // WorldLoader does; the code-built lookup the biome commands use has no tags.
-        Path tmp = Files.createTempDirectory("mcmap-oracle");
-        LevelStorageSource.LevelStorageAccess storage = LevelStorageSource.createDefault(tmp).createAccess("w");
-        MultiPackResourceManager rm = new MultiPackResourceManager(PackType.SERVER_DATA, List.of(ServerPacksSource.createVanillaPackSource().fullResources()));
+    /** The worldgen registries from the vanilla data pack with tags bound, the way WorldLoader
+     *  loads them; the code-built lookup the biome commands use has no tags. */
+    static RegistryAccess loadRegistries(MultiPackResourceManager rm) {
         var layers = net.minecraft.server.RegistryLayer.createRegistryAccess();
         var pending = net.minecraft.tags.TagLoader.loadTagsForExistingRegistries(rm, layers.getLayer(net.minecraft.server.RegistryLayer.STATIC));
         var ctxLookups = net.minecraft.tags.TagLoader.buildUpdatedLookups(layers.getAccessForLoading(net.minecraft.server.RegistryLayer.WORLD), pending);
         RegistryAccess.Frozen worldgen = net.minecraft.resources.RegistryDataLoader.load(rm, ctxLookups, net.minecraft.resources.RegistryDataLoader.WORLD_REGISTRIES, Runnable::run).join();
         pending.forEach(net.minecraft.core.Registry.PendingTags::apply);
         layers = layers.replaceFrom(net.minecraft.server.RegistryLayer.WORLD, worldgen);
-        RegistryAccess access = layers.compositeAccess();
+        return layers.compositeAccess();
+    }
+
+    static RegistryAccess loadRegistries() {
+        return loadRegistries(new MultiPackResourceManager(PackType.SERVER_DATA, List.of(ServerPacksSource.createVanillaPackSource().fullResources())));
+    }
+
+    static void run(HolderLookup.Provider reg, PrintStream log, String[] a) throws Exception {
+        long seed = Long.parseLong(a[1]);
+        int cx0 = Integer.parseInt(a[2]), cz0 = Integer.parseInt(a[3]);
+        int cx1 = Integer.parseInt(a[4]), cz1 = Integer.parseInt(a[5]);
+        Path tmp = Files.createTempDirectory("mcmap-oracle");
+        LevelStorageSource.LevelStorageAccess storage = LevelStorageSource.createDefault(tmp).createAccess("w");
+        MultiPackResourceManager rm = new MultiPackResourceManager(PackType.SERVER_DATA, List.of(ServerPacksSource.createVanillaPackSource().fullResources()));
+        RegistryAccess access = loadRegistries(rm);
         reg = access;
         String dim = a.length > 7 ? a[7] : "overworld";
         boolean over = dim.equals("overworld");

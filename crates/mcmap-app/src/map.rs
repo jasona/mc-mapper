@@ -10,6 +10,7 @@
 //! centre. One tile pixel is `1 / scale` points before the live scale, so a tile shows at
 //! `k = zoom * scale * blocks_per_pixel` device pixels per tile pixel, always in (0.5, 1].
 
+use crate::chrome::Texture;
 use crate::features::Features;
 use crate::markers::{self, Engine, MarkerStore, REGION};
 use crate::sprites::Sprites;
@@ -125,6 +126,8 @@ pub struct Map {
     pub dimension: Dimension,
     /// World preset of the Overworld.
     pub preset: Preset,
+    /// Toolbar and panel textures.
+    pub chrome: Option<crate::chrome::Chrome>,
     /// What the tiles and markers were built for, so a repeated load is free.
     loaded: Option<(i64, Dimension, Preset)>,
 }
@@ -165,6 +168,7 @@ impl Map {
             dimension: Dimension::Overworld,
             preset: Preset::Normal,
             loaded: None,
+            chrome: None,
         }
     }
 
@@ -621,6 +625,15 @@ impl Map {
     }
 }
 
+/// A panel's texture, behind its children, at the size it had last frame.
+fn textured(s: &Map, cx: &mut Cx<Map>, key: &str, t: Texture, panel: El) -> El {
+    let (Some(c), Some(size)) = (&s.chrome, cx.layout_size(key)) else { return panel };
+    let scale = cx.env().scale;
+    let radius = if t == Texture::Content { 8.0 } else { 0.0 };
+    let alpha = if t == Texture::Content { 0.92 } else { 1.0 };
+    panel.child(el().key(format!("{key}/texture")).pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0)).radius(radius).opacity(alpha).pixels(&c.pixels(t, size, scale)))
+}
+
 fn style(size: f32) -> TextStyle {
     TextStyle::new(size, 400.0)
 }
@@ -696,7 +709,7 @@ pub fn view(s: &Map, cx: &mut Cx<Map>) -> El {
     if let Some(f) = &s.features {
         let factor = scale.round().max(1.0) as u32;
         const COLUMNS: usize = 3;
-        let mut picker = col().key("features").pin(Some(10.0), Some(10.0), None, None).padding(6.0).gap(4.0).radius(8.0).fill(Color { r: 0.1, g: 0.1, b: 0.12, a: 0.85 });
+        let mut picker = textured(s, cx, "features", Texture::Content, col().key("features").pin(Some(10.0), Some(10.0), None, None).padding(6.0).gap(4.0).radius(8.0).fill(Color { r: 0.1, g: 0.1, b: 0.12, a: 0.85 }));
         let mut line = row().gap(4.0);
         let shown: Vec<(usize, &crate::features::Feature)> = f.list.iter().enumerate().filter(|(_, x)| x.dimension.is_none_or(|d| d == s.dimension)).collect();
         let count = shown.len();
@@ -795,7 +808,7 @@ pub fn view(s: &Map, cx: &mut Cx<Map>) -> El {
         .child(dim_button("Nether", Dimension::Nether))
         .child(dim_button("End", Dimension::End));
     let version = s.tiles.world().map(|_| "Java 26.3").unwrap_or("no pack");
-    let mut bar = row().key("bar").w_full().h(BAR).px(10.0).gap(10.0).items_center().fill(rgb(0.12, 0.12, 0.15))
+    let mut bar = textured(s, cx, "bar", Texture::Page, row().key("bar").w_full().h(BAR).px(10.0).gap(10.0).items_center().fill(rgb(0.12, 0.12, 0.15)))
         .child(text("Seed").color(rgb(0.7, 0.72, 0.76)))
         .child(seed_box)
         .child(button(version, false).key("version"))

@@ -6,6 +6,7 @@
 //! capture cell for cell, and this port matches the game's own classes (see `tests/oracle.rs`).
 
 pub mod climate;
+pub mod decoration;
 pub mod density;
 pub mod noise;
 pub mod random;

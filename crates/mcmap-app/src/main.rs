@@ -18,6 +18,7 @@
 //! a recorded path. `MCMAP_LIVE=0` turns all of it off. Seeds typed for a world are kept in
 //! `<data dir>/worlds.json`, matched by the agent's zoom seed or the launcher's last world.
 
+mod chrome;
 mod diskcache;
 mod features;
 mod live;
@@ -78,6 +79,7 @@ fn init() -> Map {
         }
     }
     let mut map = Map::new(sprites, world);
+    map.chrome = chrome::Chrome::load(&art_dir()).map_err(|e| eprintln!("mcmap: no UI textures ({e})")).ok();
     map.sprite_demo = std::env::var_os("MCMAP_SPRITE_DEMO").is_some();
     if let Some(p) = &pack {
         match markers::Engine::new(p, seed, mcmap_data::Dimension::Overworld) {

@@ -18,6 +18,12 @@ pub const TEMPLATES: &str = "mcmap/templates.json";
 /// Pack entry with the Nether's multi-noise parameter table (built in code, dumped by the oracle).
 pub const NETHER_PARAMETERS: &str = "mcmap/nether_parameters.json";
 
+/// The generator's per-step decoration feature order of a dimension (`oracle featorder`), which
+/// sets each feature's random seed.
+pub fn feature_order(dimension: crate::Dimension) -> String {
+    format!("mcmap/feature_order_{}.json", dimension.key().trim_start_matches("minecraft:"))
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct RawPack {
     pub format: u32,

@@ -34,7 +34,7 @@ pub fn shade(t: &Terrain, key: TileKey) -> Vec<u8> {
     // Shade at grid points 1 ..= n/STEP + 1 (pixel positions 0, STEP, ...).
     let k = m - 2;
     let d = (2.0 * STEP as f64 * bpp) as f32;
-    let (lx, ly, lz) = (-1.0f32, 1.4142135f32, -1.0f32);
+    let (lx, ly, lz) = (-1.0f32, std::f32::consts::SQRT_2, -1.0f32);
     let ll = (lx * lx + ly * ly + lz * lz).sqrt();
     let flat = ly / ll;
     let mut s = vec![0f32; k * k];

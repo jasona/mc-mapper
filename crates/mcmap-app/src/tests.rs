@@ -430,3 +430,18 @@ fn the_preset_button_switches_the_world_type() {
     // Amplified changes terrain, not surface biomes.
     assert_eq!(at(&rt), normal);
 }
+
+#[test]
+fn nearest_search_finds_decoration_features() {
+    let Ok(path) = std::env::var("MCMAP_PACK") else { return };
+    let pack = std::sync::Arc::new(mcmap_data::pack::RawPack::read(std::path::Path::new(&path)).unwrap());
+    let mut map = Map::new(None, None);
+    map.markers.sync = true;
+    map.markers.set_engine(Some(std::sync::Arc::new(crate::markers::Engine::new(&pack, 99, mcmap_data::Dimension::Overworld).unwrap())));
+    for (label, name) in [("Amethyst Geode", "Amethyst Geode"), ("Fossil", "Fossil"), ("Desert Well", "Desert Well"), ("Lava Pool", "Lava Pool")] {
+        map.nearest(label);
+        assert!(map.take_marker_updates());
+        let sel = map.selected.clone().unwrap_or_else(|| panic!("no {label}: {}", map.status));
+        assert!(sel.name.starts_with(name) && sel.likely, "{sel:?}");
+    }
+}

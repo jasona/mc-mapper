@@ -83,6 +83,8 @@ public final class Oracle {
             case "dimgrid" -> dimgrid(args);
             case "climgrid" -> climgrid(args);
             case "structs" -> Structs.run(registries, out, args);
+            case "featorder" -> Feats.order(registries, args);
+            case "featcands" -> Feats.cands(registries, out, args);
             case "dfgrid" -> dfgrid(args);
             case "templates" -> Templates.run(args);
             default -> usage();

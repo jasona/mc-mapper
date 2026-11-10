@@ -4,15 +4,20 @@ A local Minecraft Java seed map in Rust, drawn with [Rune](https://github.com/an
 later show your live position from the running game. The plan is in
 [`docs/implementation-plan.md`](docs/implementation-plan.md).
 
-Status: **M6** (live position in the window). The window draws 26.3 biomes for the Overworld, Nether
-and End, with structure, stronghold, spawn and slime-chunk layers and a nearest-structure search, and
-shows your live position from the running game.
+Status: **M6** plus most of the M4 remainder. The window draws 26.3 biomes for the Overworld, Nether
+and End (Default, Large Biomes and Amplified world types), with structure, stronghold, spawn,
+slime-chunk and decoration-feature layers, a nearest-structure search, optional hillshade, and your
+live position from the running game.
 
 Accuracy against the game's own code: biomes match bit for bit in all three dimensions (10.8M
 Overworld cells over 12 seeds, 270k Nether and End cells). Structure placement, stronghold rings and
 the spawn search point match exactly; whether a placement generates agrees 99.6% of the time (8,871
 candidates, 7 seeds; mineshafts 97.5%). Nether fortresses, bastions and Nether ruined portals agree
-100%. End cities are approximate (84%), because the island height they need is estimated.
+100%. End cities are approximate (84%), because the island height they need is estimated. Large
+Biomes and Amplified match the game cell for cell (160k cells). Decoration features: amethyst geodes
+and fossils match the game's positions exactly; lava pools match in x and z (y is estimated); desert
+wells are found but can show a rare extra. Dungeons are not shown (their positions depend on terrain
+the map does not model).
 
 ## Layout
 
@@ -65,7 +70,12 @@ cargo run -q -p xtask -- oracle -- climgrid <seed> <x0> <z0> <w> <h> <step> out.
 cargo run -q -p xtask -- atlas                             # art/seed-map/map/marker-crops.json (labels by hand)
 cargo run -q -p xtask -- oracle structs <seed> <cx0> <cz0> <cx1> <cz1> out.ndjson   # the game's structures
 cargo run -q -p xtask -- oracle templates out.json        # jigsaw and ruined-portal geometry (extract runs it)
+cargo run -q -p xtask -- oracle -- featorder overworld out.json   # feature order per step (extract runs it)
+cargo run -q -p xtask -- oracle -- featcands <seed> overworld <cx0> <cz0> <cx1> <cz1> out.ndjson <placed ids,comma-separated>
 ```
+
+Packs extracted before the decoration work lack the feature order: run `extract` again, or the
+decoration layers stay empty.
 
 Packs extracted before M4 lack the template geometry and the Nether biome table: run `extract` again. The structure tests:
 
@@ -84,8 +94,12 @@ Return, or paste a seed-map link (`...#seed=...&x=...&z=...`) to jump there. Hov
 biome under the pointer. Click a picker icon to show that layer; right-click it to jump to the nearest
 one (from the player while following, else the view centre). Click a marker for its coordinates and a
 Copy /tp button. Structures show from 0.15 px/block in, slime chunks from 0.75. Markers marked
-"likely" depend on the terrain height estimate. Decoration features (dungeons, geodes, fossils, caves)
-come in M4. `MCMAP_REPLAY=docs/replay-sample.ndjson` plays a recorded path as the player position, with the
+"likely" depend on the terrain height estimate; all decoration markers (geode, fossil, lava pool,
+desert well) are marked likely. The world-type button in the toolbar cycles Default, Large Biomes and
+Amplified; Relief toggles hillshade from the estimated terrain height.
+
+Rendered biome tiles are cached on disk under `$MCMAP_CACHE_DIR`, else `$XDG_CACHE_HOME/mcmap`, else
+`~/.cache/mcmap`, and pruned to 1 GiB (oldest first) at startup. `MCMAP_DISK_CACHE=0` turns it off. `MCMAP_REPLAY=docs/replay-sample.ndjson` plays a recorded path as the player position, with the
 marker and a Follow button.
 
 ```sh
