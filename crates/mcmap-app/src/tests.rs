@@ -398,3 +398,35 @@ fn live_finds_the_game_attaches_and_receives_fixes() {
     assert_eq!(f.source, mcmap_live::SourceKind::Agent);
     assert_eq!(f.world.server.as_deref(), Some("Test Realm"));
 }
+
+/// The preset button cycles Default, Large Biomes, Amplified, and Large Biomes changes the
+/// biomes (needs `MCMAP_PACK`).
+#[test]
+#[ignore]
+fn the_preset_button_switches_the_world_type() {
+    let pack = std::sync::Arc::new(mcmap_data::pack::RawPack::read(std::path::Path::new(&std::env::var("MCMAP_PACK").unwrap())).unwrap());
+    let mut rt = runtime(1.0);
+    rt.state.pack = Some(pack);
+    rt.update(|s, _| {
+        s.seed_field = rune::TextEdit::new("12345");
+        s.submit_seed();
+    });
+    settle(&mut rt);
+    let at = |rt: &Runtime<Map>| {
+        let w = rt.state.tiles.world().unwrap();
+        (0..50).map(|i| w.surface.biome_with_hint(i * 64, i * 40, &mut None).0).collect::<Vec<_>>()
+    };
+    let normal = at(&rt);
+    let r = rect(&rt, "preset");
+    rt.pointer_down(r[0] + 4.0, r[1] + 4.0);
+    rt.pointer_up(r[0] + 4.0, r[1] + 4.0);
+    settle(&mut rt);
+    assert_eq!(rt.state.preset, mcmap_data::Preset::LargeBiomes);
+    assert_ne!(at(&rt), normal);
+    rt.pointer_down(r[0] + 4.0, r[1] + 4.0);
+    rt.pointer_up(r[0] + 4.0, r[1] + 4.0);
+    settle(&mut rt);
+    assert_eq!(rt.state.preset, mcmap_data::Preset::Amplified);
+    // Amplified changes terrain, not surface biomes.
+    assert_eq!(at(&rt), normal);
+}

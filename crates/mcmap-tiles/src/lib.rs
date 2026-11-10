@@ -5,5 +5,6 @@ pub mod atlas;
 pub mod biomes;
 pub mod checker;
 pub mod pyramid;
+pub mod relief;
 
 pub use pyramid::{Camera, TileKey, TILE};

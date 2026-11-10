@@ -18,6 +18,7 @@
 //! a recorded path. `MCMAP_LIVE=0` turns all of it off. Seeds typed for a world are kept in
 //! `<data dir>/worlds.json`, matched by the agent's zoom seed or the launcher's last world.
 
+mod diskcache;
 mod features;
 mod live;
 mod map;
@@ -58,7 +59,11 @@ fn init() -> Map {
     let seed = std::env::var("MCMAP_SEED").ok().and_then(|s| seed_from_text(&s)).unwrap_or(DEFAULT_SEED);
     let pack = pack();
     let world = pack.as_ref().and_then(|p| match mcmap_worldgen::Surface::new(p, seed) {
-        Ok(s) => Some(Arc::new(World::new(seed, s))),
+        Ok(s) => {
+            let cache = diskcache::TileCache::for_world(&p.version, s.names(), seed, mcmap_data::Dimension::Overworld, mcmap_data::Preset::Normal);
+            let terrain = mcmap_worldgen::terrain::Terrain::overworld(&p.files, seed).ok();
+            Some(Arc::new(World::new(seed, s).with_cache(cache).with_terrain(terrain)))
+        }
         Err(e) => {
             eprintln!("mcmap: {e}");
             None
@@ -89,6 +94,7 @@ fn init() -> Map {
 /// `MCMAP_REPLAY` names one). `MCMAP_LIVE=0` turns them all off.
 fn setup(s: &mut Map, wake: Waker) {
     s.markers.set_waker(wake.clone());
+    diskcache::prune_in_background();
     if std::env::var_os("MCMAP_LIVE").is_some_and(|v| v == "0") {
         return;
     }
@@ -194,6 +200,12 @@ fn main() {
                 s.follow = true;
                 s.camera.center = [2839.5, -1418.2];
                 s.refresh_age();
+            }),
+            // The reference view with the hillshade on.
+            ("relief", |s| {
+                sync(s);
+                s.tiles.set_relief(true);
+                s.camera.zoom = 0.3;
             }),
             // The reference capture's view and size (1133 x 566 below the toolbar) with no
             // overlays, for the M2 gate: compare with art/seed-map/reference/biomes.png.

@@ -14,15 +14,20 @@ pub struct Terrain {
 
 impl Terrain {
     pub fn overworld(files: &Files, seed: i64) -> Result<Terrain, String> {
+        Terrain::new(files, seed, mcmap_data::Preset::Normal)
+    }
+
+    pub fn new(files: &Files, seed: i64, preset: mcmap_data::Preset) -> Result<Terrain, String> {
         let mut b = Builder::new(files, world_positional(seed));
-        let settings = b.json("noise_settings", "minecraft:overworld")?;
+        let settings = b.json("noise_settings", preset.settings())?;
+        let dir = preset.functions();
         let router = &settings["noise_router"];
         let depth = b.build(&router["depth"]).map_err(|e| format!("noise_router.depth: {e}"))?;
         let surface_ref = settings["aquifers"]["surface_level"].clone();
-        let surface_ref = if surface_ref.is_null() { serde_json::json!("minecraft:overworld/preliminary_surface_level") } else { surface_ref };
+        let surface_ref = if surface_ref.is_null() { serde_json::json!(format!("{dir}/preliminary_surface_level")) } else { surface_ref };
         let surface = b.build(&surface_ref).map_err(|e| format!("preliminary surface level: {e}"))?;
-        let offset = b.build(&serde_json::json!("minecraft:overworld/offset"))?;
-        let factor = b.build(&serde_json::json!("minecraft:overworld/factor"))?;
+        let offset = b.build(&serde_json::json!(format!("{dir}/offset")))?;
+        let factor = b.build(&serde_json::json!(format!("{dir}/factor")))?;
         Ok(Terrain { depth, offset, factor, surface })
     }
 

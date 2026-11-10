@@ -258,6 +258,25 @@ public final class Oracle {
         long seed = Long.parseLong(a[1]);
         boolean nether = a[2].equals("nether");
         int x0 = Integer.parseInt(a[3]), z0 = Integer.parseInt(a[4]), w = Integer.parseInt(a[5]), h = Integer.parseInt(a[6]), step = Integer.parseInt(a[7]);
+        if (a[2].equals("large_biomes") || a[2].equals("amplified")) {
+            // The Overworld surface (depth 0) under another world preset's noise settings.
+            NoiseGeneratorSettings ps = registries.lookupOrThrow(Registries.NOISE_SETTINGS)
+                .getOrThrow(a[2].equals("amplified") ? NoiseGeneratorSettings.AMPLIFIED : NoiseGeneratorSettings.LARGE_BIOMES).value();
+            Climate.Sampler ss = RandomState.create(registries.lookupOrThrow(Registries.NOISE), seed, ps).createClimateSampler(SamplerContext.EMPTY_UNCACHED);
+            MultiNoiseBiomeSource os = MultiNoiseBiomeSource.createFromPreset(registries.lookupOrThrow(Registries.MULTI_NOISE_BIOME_SOURCE_PARAMETER_LIST).getOrThrow(MultiNoiseBiomeSourceParameterLists.OVERWORLD));
+            try (PrintStream f = new PrintStream(new BufferedOutputStream(new FileOutputStream(a[8])), false, StandardCharsets.UTF_8)) {
+                for (int j = 0; j < h; j++) {
+                    for (int i = 0; i < w; i++) {
+                        int x = x0 + i * step, z = z0 + j * step;
+                        Climate.TargetPoint t = ss.sample(x >> 2, 64 >> 2, z >> 2);
+                        t = new Climate.TargetPoint(t.temperature(), t.humidity(), t.continentalness(), t.erosion(), 0L, t.weirdness());
+                        f.println(os.getNoiseBiome(t).unwrapKey().map(k -> k.identifier().toString()).orElse("?"));
+                    }
+                }
+            }
+            out.println("wrote " + (w * h) + " cells to " + a[8]);
+            return;
+        }
         NoiseGeneratorSettings settings = registries.lookupOrThrow(Registries.NOISE_SETTINGS)
             .getOrThrow(nether ? NoiseGeneratorSettings.NETHER : NoiseGeneratorSettings.END).value();
         RandomState random = RandomState.create(registries.lookupOrThrow(Registries.NOISE), seed, settings);

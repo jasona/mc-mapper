@@ -53,9 +53,20 @@ impl Surface {
     /// Biomes of `dimension`. Nether needs a pack extracted with M4's oracle (its table is built
     /// in code, like the Overworld's).
     pub fn for_dimension(pack: &mcmap_data::pack::RawPack, seed: i64, dimension: mcmap_data::Dimension) -> Result<Surface, String> {
+        Surface::for_world(pack, seed, dimension, mcmap_data::Preset::Normal)
+    }
+
+    /// Biomes of `dimension` under a world preset (Large Biomes and Amplified change only the
+    /// Overworld).
+    pub fn for_world(pack: &mcmap_data::pack::RawPack, seed: i64, dimension: mcmap_data::Dimension, preset: mcmap_data::Preset) -> Result<Surface, String> {
         use mcmap_data::Dimension;
         match dimension {
-            Dimension::Overworld => Surface::new(pack, seed),
+            Dimension::Overworld => {
+                let params = pack.overworld_parameters.as_deref().ok_or("the pack has no Overworld parameter list; extract it again with the oracle")?;
+                let (entries, names) = rtree::parse_parameters(params)?;
+                let climate = climate::ClimateSampler::from_settings(&pack.files, seed, preset.settings())?;
+                Ok(Surface { climate, tree: rtree::RTree::new(entries), names, dimension })
+            }
             Dimension::Nether => {
                 let params = pack.files.get(mcmap_data::pack::NETHER_PARAMETERS).ok_or("the pack has no Nether table; run `cargo run -q -p xtask -- extract --version 26.3` again")?;
                 let (entries, names) = rtree::parse_parameters(params)?;

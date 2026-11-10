@@ -16,7 +16,7 @@ use crate::sprites::Sprites;
 use crate::tiles::{TileStore, World};
 use mcmap_data::link::{parse_link, seed_from_text};
 use mcmap_data::pack::RawPack;
-use mcmap_data::Dimension;
+use mcmap_data::{Dimension, Preset};
 use crate::live;
 use mcmap_data::seeds::{zoom_seed, SeedStore};
 use mcmap_live::{Fix, SourceKind};
@@ -123,6 +123,10 @@ pub struct Map {
     pub markers: MarkerStore,
     pub selected: Option<Selected>,
     pub dimension: Dimension,
+    /// World preset of the Overworld.
+    pub preset: Preset,
+    /// What the tiles and markers were built for, so a repeated load is free.
+    loaded: Option<(i64, Dimension, Preset)>,
 }
 
 impl Map {
@@ -159,6 +163,8 @@ impl Map {
             markers: MarkerStore::new(),
             selected: None,
             dimension: Dimension::Overworld,
+            preset: Preset::Normal,
+            loaded: None,
         }
     }
 
@@ -350,20 +356,35 @@ impl Map {
         }
     }
 
+    /// Switch world preset (Large Biomes, Amplified). Only the Overworld changes.
+    pub fn set_preset(&mut self, p: Preset) {
+        if p == self.preset {
+            return;
+        }
+        self.preset = p;
+        if let Some(seed) = self.tiles.world().map(|w| w.seed) {
+            self.loaded = None;
+            self.load_world(seed, self.dimension);
+        }
+    }
+
     fn load_world(&mut self, seed: i64, dimension: Dimension) {
-        if self.tiles.world().is_some_and(|w| w.seed == seed) && self.dimension == dimension {
+        if self.loaded == Some((seed, dimension, self.preset)) && self.tiles.world().is_some() {
             return;
         }
         let Some(pack) = self.pack.clone() else {
             self.status = "No version pack: run `cargo run -q -p xtask -- extract --version 26.3`".into();
             return;
         };
-        match mcmap_worldgen::Surface::for_dimension(&pack, seed, dimension) {
+        match mcmap_worldgen::Surface::for_world(&pack, seed, dimension, self.preset) {
             Ok(s) => {
                 self.dimension = dimension;
-                self.tiles.set_world(Some(Arc::new(World::new(seed, s))));
+                self.loaded = Some((seed, dimension, self.preset));
+                let cache = crate::diskcache::TileCache::for_world(&pack.version, s.names(), seed, dimension, self.preset);
+                let terrain = if dimension == Dimension::Overworld { mcmap_worldgen::terrain::Terrain::new(&pack.files, seed, self.preset).ok() } else { None };
+                self.tiles.set_world(Some(Arc::new(World::new(seed, s).with_cache(cache).with_terrain(terrain))));
                 self.selected = None;
-                match Engine::new(&pack, seed, dimension) {
+                match Engine::with_preset(&pack, seed, dimension, self.preset) {
                     Ok(e) => self.markers.set_engine(Some(Arc::new(e))),
                     Err(e) => {
                         self.markers.set_engine(None);
@@ -778,7 +799,12 @@ pub fn view(s: &Map, cx: &mut Cx<Map>) -> El {
         .child(text("Seed").color(rgb(0.7, 0.72, 0.76)))
         .child(seed_box)
         .child(button(version, false).key("version"))
-        .child(dims);
+        .child(button(s.preset.label(), s.preset != Preset::Normal).key("preset").on_press(|s: &mut Map| {
+            let i = Preset::ALL.iter().position(|&p| p == s.preset).unwrap_or(0);
+            s.set_preset(Preset::ALL[(i + 1) % Preset::ALL.len()]);
+        }))
+        .child(dims)
+        .child(button("Relief", s.tiles.relief()).key("relief").on_press(|s: &mut Map| s.tiles.set_relief(!s.tiles.relief())));
     if s.player.is_some() {
         bar = bar.child(button(if s.follow { "Following" } else { "Follow" }, s.follow).key("follow").on_press_tx(|s: &mut Map, tx: &mut Tx| {
             s.follow = !s.follow;

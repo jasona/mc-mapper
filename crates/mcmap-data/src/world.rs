@@ -56,6 +56,36 @@ pub enum Preset {
     Amplified,
 }
 
+impl Preset {
+    pub const ALL: [Preset; 3] = [Preset::Normal, Preset::LargeBiomes, Preset::Amplified];
+
+    /// The Overworld noise settings the preset uses.
+    pub fn settings(self) -> &'static str {
+        match self {
+            Preset::Normal => "minecraft:overworld",
+            Preset::LargeBiomes => "minecraft:large_biomes",
+            Preset::Amplified => "minecraft:amplified",
+        }
+    }
+
+    /// The folder of its terrain density functions (`<dir>/offset`, `<dir>/factor`, ...).
+    pub fn functions(self) -> &'static str {
+        match self {
+            Preset::Normal => "minecraft:overworld",
+            Preset::LargeBiomes => "minecraft:overworld_large_biomes",
+            Preset::Amplified => "minecraft:overworld_amplified",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Preset::Normal => "Default",
+            Preset::LargeBiomes => "Large Biomes",
+            Preset::Amplified => "Amplified",
+        }
+    }
+}
+
 /// Keys every cache and can change at runtime: the game switches worlds and dimensions without
 /// the user touching the map.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]

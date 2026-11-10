@@ -129,9 +129,13 @@ pub struct Engine {
 
 impl Engine {
     pub fn new(pack: &RawPack, seed: i64, dimension: Dimension) -> Result<Engine, String> {
-        let world = World::for_dimension(pack, seed, dimension)?;
+        Engine::with_preset(pack, seed, dimension, mcmap_data::Preset::Normal)
+    }
+
+    pub fn with_preset(pack: &RawPack, seed: i64, dimension: Dimension, preset: mcmap_data::Preset) -> Result<Engine, String> {
+        let world = World::for_world(pack, seed, dimension, preset)?;
         let structures = Structures::new(&pack.files, world.surface.names())?;
-        let spawn = if dimension == Dimension::Overworld { Some(SpawnFinder::overworld(&pack.files, seed)?) } else { None };
+        let spawn = if dimension == Dimension::Overworld { Some(SpawnFinder::new(&pack.files, seed, preset)?) } else { None };
         Ok(Engine { world, structures, spawn })
     }
 

@@ -100,27 +100,35 @@ fn quarts(origin: f64, bpp: f64) -> Vec<i32> {
 
 /// RGBA, `TILE` x `TILE`, opaque.
 pub fn render(surface: &Surface, colors: &[[u8; 3]], key: TileKey) -> Vec<u8> {
+    paint(&ids(surface, key), colors)
+}
+
+/// The tile's biome ids, one per pixel, row by row: what the disk cache keeps.
+pub fn ids(surface: &Surface, key: TileKey) -> Vec<u16> {
     let n = TILE as usize;
     let bpp = blocks_per_pixel(key.level);
     let [ox, oz] = key.origin();
     let (qx, qz) = (quarts(ox, bpp), quarts(oz, bpp));
-    let mut out = vec![0u8; n * n * 4];
+    let mut out = vec![0u16; n * n];
     let mut hint = None;
-    let mut row: Vec<[u8; 3]> = vec![[0; 3]; n];
+    let mut row: Vec<u16> = vec![0; n];
     for j in 0..n {
         if j == 0 || qz[j] != qz[j - 1] {
             for i in 0..n {
-                row[i] = if i > 0 && qx[i] == qx[i - 1] {
-                    row[i - 1]
-                } else {
-                    colors[surface.biome_with_hint(qx[i], qz[j], &mut hint).0 as usize]
-                };
+                row[i] = if i > 0 && qx[i] == qx[i - 1] { row[i - 1] } else { surface.biome_with_hint(qx[i], qz[j], &mut hint).0 };
             }
         }
-        for (i, c) in row.iter().enumerate() {
-            let p = (j * n + i) * 4;
-            out[p..p + 4].copy_from_slice(&[c[0], c[1], c[2], 255]);
-        }
+        out[j * n..(j + 1) * n].copy_from_slice(&row);
+    }
+    out
+}
+
+/// RGBA pixels of biome ids.
+pub fn paint(ids: &[u16], colors: &[[u8; 3]]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(ids.len() * 4);
+    for &id in ids {
+        let c = colors.get(id as usize).copied().unwrap_or([255, 0, 255]);
+        out.extend_from_slice(&[c[0], c[1], c[2], 255]);
     }
     out
 }

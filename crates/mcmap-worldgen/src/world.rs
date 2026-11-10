@@ -4,7 +4,7 @@ use crate::climate::quantize;
 use crate::terrain::Terrain;
 use crate::{BiomeId, Surface};
 use mcmap_data::pack::RawPack;
-use mcmap_data::Dimension;
+use mcmap_data::{Dimension, Preset};
 
 pub struct World {
     pub seed: i64,
@@ -27,8 +27,12 @@ impl World {
     }
 
     pub fn for_dimension(pack: &RawPack, seed: i64, dimension: Dimension) -> Result<World, String> {
-        let terrain = if dimension == Dimension::Overworld { Some(Terrain::overworld(&pack.files, seed)?) } else { None };
-        Ok(World { seed, surface: Surface::for_dimension(pack, seed, dimension)?, terrain, dimension })
+        World::for_world(pack, seed, dimension, Preset::Normal)
+    }
+
+    pub fn for_world(pack: &RawPack, seed: i64, dimension: Dimension, preset: Preset) -> Result<World, String> {
+        let terrain = if dimension == Dimension::Overworld { Some(Terrain::new(&pack.files, seed, preset)?) } else { None };
+        Ok(World { seed, surface: Surface::for_world(pack, seed, dimension, preset)?, terrain, dimension })
     }
 
     /// Biome at quart coordinates, at that height (`MultiNoiseBiomeSource.getNoiseBiome`).
@@ -73,8 +77,12 @@ pub struct SpawnFinder {
 
 impl SpawnFinder {
     pub fn overworld(files: &crate::density::Files, seed: i64) -> Result<SpawnFinder, String> {
+        SpawnFinder::new(files, seed, Preset::Normal)
+    }
+
+    pub fn new(files: &crate::density::Files, seed: i64, preset: Preset) -> Result<SpawnFinder, String> {
         let mut b = crate::density::Builder::new(files, crate::random::world_positional(seed));
-        let settings = b.json("noise_settings", "minecraft:overworld")?;
+        let settings = b.json("noise_settings", preset.settings())?;
         let mut targets = Vec::new();
         for t in settings["spawn_target"].as_array().ok_or("noise settings without spawn_target")? {
             let mut params = Vec::new();
