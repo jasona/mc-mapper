@@ -1,9 +1,9 @@
-//! The part of the density-function language the surface climate needs, read from the pack's
-//! JSON: references, caches (evaluation is uncached, so they pass through), constants, `noise`
-//! with optional shifts, and the `shift_a`, `shift_b` and `shift` offset samplers. Anything else
-//! is reported by name; splines and the 3-D terrain functions come with the depth layer.
-//!
-//! Each node evaluates at an integer block position, like the game's `sampleValue`.
+//! The density-function language, read from the pack's JSON and evaluated uncached at integer
+//! block positions like the game's `sampleValue`. Covers what the climate, depth and the
+//! preliminary surface level need: references, caches (pass through), constants, noises and
+//! shifts, the binary and unary operators, `clamp`, `lerp`, `gradient`, `spline` and
+//! `find_top_surface`. Blending is off, so `blend_alpha` is 1 and `blend_offset` is 0.
+//! Anything else is reported by name. Arithmetic is single precision, as in 26.3.
 
 use crate::noise::{NoiseParams, NormalNoise};
 use crate::random::Positional;
@@ -24,6 +24,92 @@ pub enum Df {
     ShiftB(Arc<NormalNoise>),
     /// `shift`: `offset(x / 4, y / 4, z / 4) * 4`.
     Shift(Arc<NormalNoise>),
+    Bin(Op2, Box<Df>, Box<Df>),
+    Un(Op1, Box<Df>),
+    Clamp(Box<Df>, f32, f32),
+    /// `lerp(alpha, first, second)`; alpha 0 and 1 return one side without the other.
+    Lerp(Box<Df>, Box<Df>, Box<Df>),
+    /// `gradient` along an axis (0 x, 1 y, 2 z), clamped tiling: `from_value + (clamp(c) - from) * factor`.
+    Gradient { axis: u8, from: i32, min: i32, max: i32, from_value: f32, factor: f32 },
+    Spline(Box<Spline>),
+    /// `find_top_surface`: the highest y on a `cell` grid below `upper` where `density` > 0.
+    TopSurface { density: Box<Df>, upper: Box<Df>, lower: i32, cell: i32 },
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum Op2 {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Min,
+    Max,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum Op1 {
+    Abs,
+    Square,
+    Cube,
+    Sqrt,
+    HalfNegative,
+    QuarterNegative,
+    Reciprocal,
+    Negate,
+    Squeeze,
+    Log,
+    Sign,
+}
+
+/// `CubicSpline`: a constant, or points along a coordinate with cubic Hermite segments.
+#[derive(Debug)]
+pub enum Spline {
+    Const(f32),
+    Multi { coord: Df, locations: Vec<f32>, values: Vec<Spline>, derivatives: Vec<f32> },
+}
+
+/// `Mth.lerp(float, float, float)`.
+#[inline]
+pub fn lerp(t: f32, a: f32, b: f32) -> f32 {
+    a + t * (b - a)
+}
+
+impl Spline {
+    pub fn sample(&self, x: i32, y: i32, z: i32) -> f32 {
+        match self {
+            Spline::Const(v) => *v,
+            Spline::Multi { coord, locations, values, derivatives } => {
+                let c = coord.eval(x, y, z);
+                // findIntervalStart: first index whose location is above c, minus one.
+                let start = locations.partition_point(|&l| !(c < l)) as i32 - 1;
+                let last = locations.len() as i32 - 1;
+                let extend = |i: usize| {
+                    let v = values[i].sample(x, y, z);
+                    let d = derivatives[i];
+                    if d == 0.0 { v } else { v + d * (c - locations[i]) }
+                };
+                if start < 0 {
+                    return extend(0);
+                }
+                if start == last {
+                    return extend(last as usize);
+                }
+                let i = start as usize;
+                let (l0, l1) = (locations[i], locations[i + 1]);
+                let t = (c - l0) / (l1 - l0);
+                let (v0, v1) = (values[i].sample(x, y, z), values[i + 1].sample(x, y, z));
+                let a = derivatives[i] * (l1 - l0) - (v1 - v0);
+                let b = -derivatives[i + 1] * (l1 - l0) + (v1 - v0);
+                lerp(t, v0, v1) + t * (1.0 - t) * lerp(t, a, b)
+            }
+        }
+    }
+}
+
+/// `Mth.clamp(float, float, float)`.
+#[inline]
+fn clampf(v: f32, lo: f32, hi: f32) -> f32 {
+    if v < lo { lo } else { v.min(hi) }
 }
 
 impl Df {
@@ -70,6 +156,68 @@ impl Df {
             Df::ShiftA(n) => n.get(x as f64 * 0.25, y as f64 * 0.0, z as f64 * 0.25) * 4.0,
             Df::ShiftB(n) => n.get(z as f64 * 0.25, x as f64 * 0.25, 0.0) * 4.0,
             Df::Shift(n) => n.get(x as f64 * 0.25, y as f64 * 0.25, z as f64 * 0.25) * 4.0,
+            Df::Bin(op, l, r) => {
+                let a = l.eval(x, y, z);
+                match op {
+                    Op2::Add => a + r.eval(x, y, z),
+                    Op2::Sub => a - r.eval(x, y, z),
+                    // The game skips the right side when the left is 0.
+                    Op2::Mul => if a == 0.0 { 0.0 } else { a * r.eval(x, y, z) },
+                    Op2::Div => if a == 0.0 { 0.0 } else { a / r.eval(x, y, z) },
+                    Op2::Min => a.min(r.eval(x, y, z)),
+                    Op2::Max => a.max(r.eval(x, y, z)),
+                }
+            }
+            Df::Un(op, i) => {
+                let v = i.eval(x, y, z);
+                match op {
+                    Op1::Abs => v.abs(),
+                    Op1::Square => v * v,
+                    Op1::Cube => v * v * v,
+                    Op1::Sqrt => v.sqrt(),
+                    Op1::HalfNegative => if v > 0.0 { v } else { v * 0.5 },
+                    Op1::QuarterNegative => if v > 0.0 { v } else { v * 0.25 },
+                    Op1::Reciprocal => 1.0 / v,
+                    Op1::Negate => -v,
+                    Op1::Squeeze => {
+                        let c = clampf(v, -1.0, 1.0);
+                        c / 2.0 - c * c * c / 24.0
+                    }
+                    Op1::Log => v.ln(),
+                    Op1::Sign => if v > 0.0 { 1.0 } else if v < 0.0 { -1.0 } else { 0.0 },
+                }
+            }
+            Df::Clamp(i, lo, hi) => clampf(i.eval(x, y, z), *lo, *hi),
+            Df::Lerp(a, f, s) => {
+                let t = a.eval(x, y, z);
+                if t == 0.0 {
+                    f.eval(x, y, z)
+                } else if t == 1.0 {
+                    s.eval(x, y, z)
+                } else {
+                    lerp(t, f.eval(x, y, z), s.eval(x, y, z))
+                }
+            }
+            Df::Gradient { axis, from, min, max, from_value, factor } => {
+                let c = match axis { 0 => x, 1 => y, _ => z };
+                from_value + (c.clamp(*min, *max) - from) as f32 * factor
+            }
+            Df::Spline(s) => s.sample(x, y, z),
+            Df::TopSurface { density, upper, lower, cell } => {
+                let u = upper.eval(x, y, z);
+                let top = (u / *cell as f32).floor() as i32 * cell;
+                if top <= *lower {
+                    return *lower as f32;
+                }
+                let mut yy = top;
+                while yy >= *lower {
+                    if density.eval(x, yy, z) > 0.0 {
+                        return yy as f32;
+                    }
+                    yy -= cell;
+                }
+                *lower as f32
+            }
         }
     }
 }
@@ -113,6 +261,24 @@ impl<'a> Builder<'a> {
         Ok(n)
     }
 
+    fn spline(&mut self, v: &Value) -> Result<Spline, String> {
+        match v {
+            Value::Number(n) => Ok(Spline::Const(n.as_f64().unwrap_or(0.0) as f32)),
+            Value::Object(o) => {
+                let coord = self.build(o.get("coordinate").ok_or("spline without a coordinate")?)?;
+                let points = o.get("points").and_then(Value::as_array).ok_or("spline without points")?;
+                let (mut locations, mut values, mut derivatives) = (Vec::new(), Vec::new(), Vec::new());
+                for p in points {
+                    locations.push(p.get("location").and_then(Value::as_f64).ok_or("spline point without a location")? as f32);
+                    derivatives.push(p.get("derivative").and_then(Value::as_f64).unwrap_or(0.0) as f32);
+                    values.push(self.spline(p.get("value").ok_or("spline point without a value")?)?);
+                }
+                Ok(Spline::Multi { coord, locations, values, derivatives })
+            }
+            _ => Err(format!("not a spline: {v}")),
+        }
+    }
+
     pub fn build(&mut self, v: &Value) -> Result<Df, String> {
         match v {
             Value::Number(n) => Ok(Df::Const(n.as_f64().unwrap_or(0.0) as f32)),
@@ -154,6 +320,54 @@ impl<'a> Builder<'a> {
                             None
                         };
                         Ok(Df::Noise { noise, xz, y, shift })
+                    }
+                    "blend_alpha" => Ok(Df::Const(1.0)),
+                    "blend_offset" => Ok(Df::Const(0.0)),
+                    "blend_density" => self.build(o.get("argument").or(o.get("input")).ok_or("blend_density without an input")?),
+                    t @ ("add" | "sub" | "mul" | "div" | "min" | "max") => {
+                        let op = match t { "add" => Op2::Add, "sub" => Op2::Sub, "mul" => Op2::Mul, "div" => Op2::Div, "min" => Op2::Min, _ => Op2::Max };
+                        let l = self.build(o.get("left").or(o.get("argument1")).ok_or(format!("{t} without a left side"))?)?;
+                        let r = self.build(o.get("right").or(o.get("argument2")).ok_or(format!("{t} without a right side"))?)?;
+                        Ok(Df::Bin(op, Box::new(l), Box::new(r)))
+                    }
+                    t @ ("abs" | "square" | "cube" | "sqrt" | "half_negative" | "quarter_negative" | "reciprocal" | "negate" | "squeeze" | "log" | "sign") => {
+                        let op = match t {
+                            "abs" => Op1::Abs, "square" => Op1::Square, "cube" => Op1::Cube, "sqrt" => Op1::Sqrt,
+                            "half_negative" => Op1::HalfNegative, "quarter_negative" => Op1::QuarterNegative,
+                            "reciprocal" => Op1::Reciprocal, "negate" => Op1::Negate, "squeeze" => Op1::Squeeze,
+                            "log" => Op1::Log, _ => Op1::Sign,
+                        };
+                        let i = self.build(o.get("input").or(o.get("argument")).ok_or(format!("{t} without an input"))?)?;
+                        Ok(Df::Un(op, Box::new(i)))
+                    }
+                    "clamp" => {
+                        let i = self.build(o.get("input").ok_or("clamp without an input")?)?;
+                        let f = |k: &str| o.get(k).and_then(Value::as_f64).map(|v| v as f32).ok_or(format!("clamp without {k}"));
+                        Ok(Df::Clamp(Box::new(i), f("min")?, f("max")?))
+                    }
+                    "lerp" => {
+                        let g = |b: &mut Self, k: &str| -> Result<Box<Df>, String> { Ok(Box::new(b.build(o.get(k).ok_or(format!("lerp without {k}"))?)?)) };
+                        Ok(Df::Lerp(g(self, "alpha")?, g(self, "first")?, g(self, "second")?))
+                    }
+                    "gradient" => {
+                        let axis = match o.get("axis").and_then(Value::as_str).unwrap_or("y") { "x" => 0, "y" => 1, _ => 2 };
+                        let tiling = o.get("tiling").and_then(Value::as_str).unwrap_or("clamp");
+                        if !matches!(tiling, "clamp" | "clamped" | "minecraft:clamp") {
+                            return Err(format!("gradient tiling {tiling:?} is not supported yet"));
+                        }
+                        let int = |k: &str| o.get(k).and_then(Value::as_i64).map(|v| v as i32).ok_or(format!("gradient without {k}"));
+                        let fl = |k: &str| o.get(k).and_then(Value::as_f64).map(|v| v as f32).ok_or(format!("gradient without {k}"));
+                        let (from, to) = (int("from_coordinate")?, int("to_coordinate")?);
+                        let (fv, tv) = (fl("from_value")?, fl("to_value")?);
+                        Ok(Df::Gradient { axis, from, min: from.min(to), max: from.max(to), from_value: fv, factor: (tv - fv) / (to - from) as f32 })
+                    }
+                    "spline" => Ok(Df::Spline(Box::new(self.spline(o.get("spline").ok_or("spline without a spline")?)?))),
+                    "find_top_surface" => {
+                        let density = Box::new(self.build(o.get("density").ok_or("find_top_surface without density")?)?);
+                        let upper = Box::new(self.build(o.get("upper_bound").ok_or("find_top_surface without upper_bound")?)?);
+                        let lower = o.get("lower_bound").and_then(Value::as_i64).ok_or("find_top_surface without lower_bound")? as i32;
+                        let cell = o.get("cell_height").and_then(Value::as_i64).ok_or("find_top_surface without cell_height")? as i32;
+                        Ok(Df::TopSurface { density, upper, lower, cell })
                     }
                     other => Err(format!("density function type {other:?} is not supported yet")),
                 }

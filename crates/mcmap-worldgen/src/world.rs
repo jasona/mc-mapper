@@ -1,0 +1,115 @@
+//! One Overworld seed: surface biomes, the terrain shape functions, and biomes at any height.
+
+use crate::climate::quantize;
+use crate::terrain::Terrain;
+use crate::{BiomeId, Surface};
+use mcmap_data::pack::RawPack;
+
+pub struct World {
+    pub seed: i64,
+    pub surface: Surface,
+    pub terrain: Terrain,
+}
+
+/// Sea level of the Overworld preset.
+pub const SEA_LEVEL: i32 = 63;
+
+/// Measured on 26.3: the game's heightmaps sit about 13 blocks above the preliminary surface
+/// level, give or take 7 (the 3-D noise it leaves out). See `examples/heights.rs`.
+const SURFACE_BIAS: i32 = 13;
+
+impl World {
+    pub fn new(pack: &RawPack, seed: i64) -> Result<World, String> {
+        Ok(World { seed, surface: Surface::new(pack, seed)?, terrain: Terrain::overworld(&pack.files, seed)? })
+    }
+
+    /// Biome at quart coordinates, at that height (`MultiNoiseBiomeSource.getNoiseBiome`).
+    pub fn biome(&self, qx: i32, qy: i32, qz: i32, hint: &mut Option<u32>) -> BiomeId {
+        let (x, y, z) = (qx << 2, qy << 2, qz << 2);
+        let v = self.surface.climate.raw(x, y, z);
+        let d = self.terrain.depth(x, y, z);
+        let t = [quantize(v[0]), quantize(v[1]), quantize(v[2]), quantize(v[3]), quantize(d), quantize(v[4])];
+        BiomeId(self.surface.tree.search(&t, hint))
+    }
+
+    /// Biome at a block position (its quart).
+    pub fn biome_at(&self, x: i32, y: i32, z: i32) -> BiomeId {
+        let mut h = None;
+        self.biome(x >> 2, y >> 2, z >> 2, &mut h)
+    }
+
+    /// Estimated `getBaseHeight(WORLD_SURFACE_WG)`: the first free block above the terrain or the sea.
+    pub fn surface_height(&self, x: i32, z: i32) -> i32 {
+        (self.terrain.surface(x, z) + SURFACE_BIAS).max(SEA_LEVEL)
+    }
+
+    /// Estimated `getBaseHeight(OCEAN_FLOOR_WG)`: the first non-solid block above the terrain.
+    pub fn floor_height(&self, x: i32, z: i32) -> i32 {
+        self.terrain.surface(x, z) + SURFACE_BIAS
+    }
+}
+
+/// `NoiseSpawnFinder`: the world spawn's search point, from the noise settings' spawn targets.
+/// The server then picks a grass block in that chunk area, which this does not model.
+pub struct SpawnFinder {
+    /// Per target point: (function, quantized min, quantized max) for each listed parameter.
+    targets: Vec<Vec<(crate::density::Df, i64, i64)>>,
+}
+
+impl SpawnFinder {
+    pub fn overworld(files: &crate::density::Files, seed: i64) -> Result<SpawnFinder, String> {
+        let mut b = crate::density::Builder::new(files, crate::random::world_positional(seed));
+        let settings = b.json("noise_settings", "minecraft:overworld")?;
+        let mut targets = Vec::new();
+        for t in settings["spawn_target"].as_array().ok_or("noise settings without spawn_target")? {
+            let mut params = Vec::new();
+            for (id, range) in t.as_object().ok_or("spawn target is not an object")? {
+                let f = b.build(&serde_json::Value::String(id.clone()))?;
+                let lo = range[0].as_f64().ok_or("spawn target range")? as f32;
+                let hi = range[1].as_f64().ok_or("spawn target range")? as f32;
+                params.push((f, quantize(lo), quantize(hi)));
+            }
+            targets.push(params);
+        }
+        Ok(SpawnFinder { targets })
+    }
+
+    fn fitness(&self, x: i32, z: i32) -> i64 {
+        let (sx, sz) = ((x >> 2) << 2, (z >> 2) << 2);
+        let mut best = i64::MAX;
+        for t in &self.targets {
+            let mut sum = 0i64;
+            for (f, lo, hi) in t {
+                let v = quantize(f.eval(sx, 0, sz));
+                let d = if v - hi > 0 { v - hi } else { (lo - v).max(0) };
+                sum = sum.wrapping_add(d.wrapping_mul(d));
+            }
+            best = best.min(sum);
+        }
+        let dist = (x as i64) * (x as i64) + (z as i64) * (z as i64);
+        best.wrapping_mul(2048 * 2048).wrapping_add(dist)
+    }
+
+    /// The spawn search point (block x, z).
+    pub fn find(&self) -> (i32, i32) {
+        let mut best = ((0, 0), self.fitness(0, 0));
+        for (max, step) in [(2048.0f32, 512.0f32), (512.0, 32.0)] {
+            let (bx, bz) = best.0;
+            let (mut angle, mut dist) = (0.0f32, step);
+            while dist <= max {
+                let x = bx + ((angle as f64).sin() * dist as f64) as i32;
+                let z = bz + ((angle as f64).cos() * dist as f64) as i32;
+                let f = self.fitness(x, z);
+                if f < best.1 {
+                    best = ((x, z), f);
+                }
+                angle += step / dist;
+                if angle as f64 > std::f64::consts::TAU {
+                    angle = 0.0;
+                    dist += step;
+                }
+            }
+        }
+        best.0
+    }
+}

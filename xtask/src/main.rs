@@ -138,6 +138,13 @@ fn extract(cli: &Cli, version: &str, no_oracle: bool, out: Option<PathBuf>) -> R
         oracle(&i, &v, &["params".into(), tmp.to_string_lossy().into_owned()])?;
         Some(std::fs::read_to_string(&tmp).map_err(|e| e.to_string())?)
     };
+    if !no_oracle {
+        // Template geometry for the structure engine (start pieces, ruined portals): it lives
+        // in NBT files, so the oracle reads it with the game's own template manager.
+        let tmp = root().join("target/java").join(format!("templates-{version}.json"));
+        oracle(&i, &v, &["templates".into(), tmp.to_string_lossy().into_owned()])?;
+        files.insert(pack::TEMPLATES.to_owned(), std::fs::read_to_string(&tmp).map_err(|e| e.to_string())?);
+    }
     let p = RawPack { format: pack::FORMAT, version: version.to_owned(), files, overworld_parameters };
     let path = out.unwrap_or_else(|| pack::pack_path(version));
     p.write(&path)?;

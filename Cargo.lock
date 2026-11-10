@@ -1800,6 +1800,7 @@ dependencies = [
 name = "mcmap-worldgen"
 version = "0.0.1"
 dependencies = [
+ "image",
  "mcmap-data",
  "md-5",
  "serde",

@@ -4,7 +4,8 @@
 //! cargo run -p mcmap-app -- --snap out.png --scene home    render the reference view headless
 //!
 //! Art is read from `$MCMAP_ART`, else `art/seed-map` under the current directory; it supplies
-//! the feature picker's icons. `MCMAP_SPRITE_DEMO=1` also draws the marker atlas as a test grid.
+//! the feature picker's icons and the map markers. `MCMAP_SPRITE_DEMO=1` also draws the marker
+//! atlas as a test grid.
 //!
 //! The starting seed is `$MCMAP_SEED` (default: the reference capture's seed); the seed field
 //! changes it. The version pack is `$MCMAP_PACK`, else the data directory's 26.3 pack; without
@@ -15,6 +16,7 @@
 
 mod features;
 mod map;
+mod markers;
 mod sprites;
 mod tiles;
 
@@ -46,11 +48,7 @@ fn pack() -> Option<Arc<RawPack>> {
 }
 
 fn init() -> Map {
-    let sprites = if std::env::var_os("MCMAP_SPRITE_DEMO").is_some() {
-        sprites::Sprites::load(&art_dir()).map_err(|e| eprintln!("mcmap: no marker art ({e})")).ok()
-    } else {
-        None
-    };
+    let sprites = sprites::Sprites::load(&art_dir()).map_err(|e| eprintln!("mcmap: no marker art ({e})")).ok();
     let seed = std::env::var("MCMAP_SEED").ok().and_then(|s| seed_from_text(&s)).unwrap_or(DEFAULT_SEED);
     let pack = pack();
     let world = pack.as_ref().and_then(|p| match mcmap_worldgen::Surface::new(p, seed) {
@@ -61,6 +59,13 @@ fn init() -> Map {
         }
     });
     let mut map = Map::new(sprites, world);
+    map.sprite_demo = std::env::var_os("MCMAP_SPRITE_DEMO").is_some();
+    if let Some(p) = &pack {
+        match markers::Engine::new(p, seed) {
+            Ok(e) => map.markers.set_engine(Some(Arc::new(e))),
+            Err(e) => eprintln!("mcmap: structures: {e}"),
+        }
+    }
     map.pack = pack;
     map.features = features::Features::load(&art_dir()).map_err(|e| eprintln!("mcmap: no feature picker ({e})")).ok();
     map
@@ -69,6 +74,7 @@ fn init() -> Map {
 /// Start the position source, if one is configured. Fixes go through a forwarding thread that
 /// wakes the window for each batch.
 fn setup(s: &mut Map, wake: Waker) {
+    s.markers.set_waker(wake.clone());
     let Some(path) = std::env::var_os("MCMAP_REPLAY") else { return };
     let source = match std::fs::read_to_string(&path).map_err(|e| e.to_string()).and_then(|t| ReplaySource::parse(&t)) {
         Ok(mut r) => {
@@ -96,12 +102,15 @@ fn setup(s: &mut Map, wake: Waker) {
 }
 
 fn poll(s: &mut Map, _t: f64, tx: &mut Tx) -> bool {
-    s.take_fixes(tx)
+    let fixes = s.take_fixes(tx);
+    let markers = s.take_marker_updates();
+    fixes || markers
 }
 
 /// Headless scenes render tiles synchronously so a snapshot never shows a tile still in flight.
 fn sync(s: &mut Map) {
     s.tiles.sync.set(true);
+    s.markers.sync = true;
 }
 
 fn main() {
@@ -121,6 +130,21 @@ fn main() {
                 sync(s);
                 s.camera.center = [29_999_000.5, -29_999_000.5];
                 s.camera.zoom = 4.0;
+            }),
+            // The reference view with the layers features.png shows (trial chambers, ruined
+            // portals, ancient cities, slime chunks) plus every other structure and the spawn.
+            ("structures", |s| {
+                sync(s);
+                if let Some(p) = s.pack.clone() {
+                    let seed = s.tiles.world().map(|w| w.seed).unwrap_or(DEFAULT_SEED);
+                    s.markers.set_engine(markers::Engine::new(&p, seed).ok().map(Arc::new));
+                }
+                if let Some(f) = &mut s.features {
+                    f.on.clear();
+                    for l in ["Biomes", "Slime Chunk", "Spawn Point", "Stronghold"].into_iter().chain(markers::KINDS.iter().map(|k| k.label)) {
+                        f.on.insert(l.to_owned());
+                    }
+                }
             }),
             // The reference capture's view and size (1133 x 566 below the toolbar) with no
             // overlays, for the M2 gate: compare with art/seed-map/reference/biomes.png.

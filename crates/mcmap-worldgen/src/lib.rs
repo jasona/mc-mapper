@@ -10,6 +10,9 @@ pub mod density;
 pub mod noise;
 pub mod random;
 pub mod rtree;
+pub mod terrain;
+pub mod structure;
+pub mod world;
 
 use std::cell::Cell;
 

@@ -11,6 +11,10 @@ use std::path::{Path, PathBuf};
 
 pub const FORMAT: u32 = 1;
 
+/// Pack entry with the start-piece and ruined-portal template geometry the oracle dumps
+/// (`templates` command). Older packs lack it; structure positions then fall back to estimates.
+pub const TEMPLATES: &str = "mcmap/templates.json";
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct RawPack {
     pub format: u32,

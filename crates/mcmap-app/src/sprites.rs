@@ -32,7 +32,7 @@ impl Sprites {
     pub fn from_atlas(atlas: &Rgba) -> Sprites {
         let rects = segment(atlas, MARKER_ALPHA, 0);
         let images: Vec<Rgba> = rects.iter().map(|&r| atlas.crop(r)).collect();
-        // M0 has no structure engine yet: lay every sprite out in a grid north-west of the
+        // The M0 test grid (`MCMAP_SPRITE_DEMO`): lay every sprite out in a grid north-west of the
         // reference view's centre, 32 blocks apart, so the camera can be checked against them.
         let markers = rects
             .iter()
@@ -44,6 +44,15 @@ impl Sprites {
             })
             .collect();
         Sprites { images, uploaded: RefCell::new(HashMap::new()), markers }
+    }
+
+    pub fn len(&self) -> usize {
+        self.images.len()
+    }
+
+    /// Sprite size in points (one atlas pixel per point).
+    pub fn size(&self, sprite: usize) -> [f32; 2] {
+        [self.images[sprite].w as f32, self.images[sprite].h as f32]
     }
 
     pub fn markers(&self) -> &[Marker] {

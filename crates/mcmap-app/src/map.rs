@@ -11,12 +11,14 @@
 //! `k = zoom * scale * blocks_per_pixel` device pixels per tile pixel, always in (0.5, 1].
 
 use crate::features::Features;
+use crate::markers::{self, Engine, MarkerStore, REGION};
 use crate::sprites::Sprites;
 use crate::tiles::{TileStore, World};
 use mcmap_data::link::{parse_link, seed_from_text};
 use mcmap_data::pack::RawPack;
 use mcmap_live::Fix;
 use mcmap_tiles::pyramid::{blocks_per_pixel, tile_blocks, Camera, TileKey, TILE};
+use mcmap_worldgen::structure::Found;
 use mcmap_worldgen::BiomeSampler;
 use rune::tok::TextStyle;
 use rune::{col, el, row, text, text_input, Color, Cx, Drag, El, Live, LiveText, MagnifyEvent, Phase, PointerEvent, TextEdit, Tx, WheelEvent};
@@ -31,6 +33,35 @@ pub const HOME: Camera = Camera { center: [2839.0, -1418.0], zoom: 1.25 };
 pub const BAR: f32 = 40.0;
 
 const MARKER: f32 = 14.0;
+
+/// Structure markers show from this zoom (px per block) in; further out they would be thousands.
+pub const STRUCTURE_ZOOM: f64 = 0.15;
+/// Slime chunks show from this zoom in.
+pub const SLIME_ZOOM: f64 = 0.75;
+
+/// A clicked marker: what the info panel shows.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Selected {
+    pub name: String,
+    pub x: i32,
+    pub y: Option<i32>,
+    pub z: i32,
+    pub likely: bool,
+}
+
+impl Selected {
+    pub fn of(f: &Found) -> Selected {
+        // The marker is where the icon is; y is the generation point's estimate.
+        Selected { name: markers::display_name(&f.structure), x: f.marker.0, y: Some(f.pos.1), z: f.marker.1, likely: f.likely }
+    }
+
+    pub fn tp(&self) -> String {
+        match self.y {
+            Some(y) => format!("/tp @s {} {} {}", self.x, y, self.z),
+            None => format!("/tp @s {} ~ {}", self.x, self.z),
+        }
+    }
+}
 
 /// What one view run laid out. A camera move that keeps it can skip the view.
 #[derive(Clone, Debug, PartialEq)]
@@ -67,6 +98,10 @@ pub struct Map {
     pub fixes: Option<Receiver<Fix>>,
     /// The pointer is over the canvas: show the hover readout.
     pub hovering: bool,
+    /// Draw the whole marker atlas as a grid (M0 check, `MCMAP_SPRITE_DEMO`).
+    pub sprite_demo: bool,
+    pub markers: MarkerStore,
+    pub selected: Option<Selected>,
 }
 
 impl Map {
@@ -92,6 +127,9 @@ impl Map {
             follow: false,
             fixes: None,
             hovering: false,
+            sprite_demo: true,
+            markers: MarkerStore::new(),
+            selected: None,
         }
     }
 
@@ -222,6 +260,14 @@ impl Map {
         match mcmap_worldgen::Surface::new(&pack, seed) {
             Ok(s) => {
                 self.tiles.set_world(Some(Arc::new(World::new(seed, s))));
+                self.selected = None;
+                match Engine::new(&pack, seed) {
+                    Ok(e) => self.markers.set_engine(Some(Arc::new(e))),
+                    Err(e) => {
+                        self.markers.set_engine(None);
+                        self.status = format!("Structures: {e}");
+                    }
+                }
                 if !self.status.starts_with("Only") && !self.status.starts_with("The link") {
                     self.status.clear();
                 }
@@ -263,6 +309,56 @@ impl Map {
     }
 }
 
+impl Map {
+    /// Background marker work finished, or a nearest search answered. True when the view must
+    /// re-run.
+    pub fn take_marker_updates(&mut self) -> bool {
+        let mut changed = self.markers.take_dirty();
+        if let Some((label, found)) = self.markers.take_nearest() {
+            changed = true;
+            match found {
+                Some(f) => {
+                    let sel = Selected::of(&f);
+                    self.follow = false;
+                    self.camera.center = [sel.x as f64 + 0.5, sel.z as f64 + 0.5];
+                    if self.camera.zoom < 0.5 {
+                        self.camera.zoom = 0.5;
+                    }
+                    if let Some(fs) = &mut self.features
+                        && !fs.is_on(&label)
+                    {
+                        fs.toggle(&label);
+                    }
+                    self.status.clear();
+                    self.selected = Some(sel);
+                }
+                None => self.status = format!("No {label} within about 24,000 blocks"),
+            }
+        }
+        changed
+    }
+
+    /// Start a nearest search for a picker label, from the player if following, else the view centre.
+    pub fn nearest(&mut self, label: &str) {
+        let from = match (&self.player, self.follow) {
+            (Some(p), true) => [p.pos[0], p.pos[2]],
+            _ => self.camera.center,
+        };
+        if label == "Spawn Point" {
+            if let Some((x, z)) = self.markers.spawn() {
+                self.camera.center = [x as f64 + 0.5, z as f64 + 0.5];
+                self.follow = false;
+                self.selected = Some(Selected { name: "World spawn (search point)".into(), x, y: None, z, likely: true });
+            }
+            return;
+        }
+        match self.markers.find_nearest(label, from[0], from[1]) {
+            Ok(()) => self.status = format!("Searching for the nearest {label}…"),
+            Err(e) => self.status = e,
+        }
+    }
+}
+
 fn style(size: f32) -> TextStyle {
     TextStyle::new(size, 400.0)
 }
@@ -298,7 +394,7 @@ pub fn view(s: &Map, cx: &mut Cx<Map>) -> El {
         }
         s.tiles.end_frame();
     }
-    if size[0] > 0.0
+    if size[0] > 0.0 && s.sprite_demo
         && let Some(sp) = &s.sprites
     {
         let factor = scale.round().max(1.0) as u32;
@@ -314,6 +410,11 @@ pub fn view(s: &Map, cx: &mut Cx<Map>) -> El {
                     .pixels(&img),
             );
         }
+    }
+    if size[0] > 0.0
+        && let Some(f) = &s.features
+    {
+        world = overlay(s, f, &l, world, scale);
     }
     *s.shown.borrow_mut() = (size[0] > 0.0).then_some(l);
 
@@ -341,10 +442,12 @@ pub fn view(s: &Map, cx: &mut Cx<Map>) -> El {
                     .on_press(move |s: &mut Map| {
                         if let Some(f) = &mut s.features {
                             f.toggle(&label);
-                            if label != "Biomes" && f.is_on(&label) {
-                                s.status = format!("{label}: markers arrive with structures in M3");
-                            }
+                            s.status = picker_hint(&label, f.is_on(&label), s.camera.zoom);
                         }
+                    })
+                    .on_secondary_press({
+                        let label = feat.label.clone();
+                        move |s: &mut Map, _p, _tx: &mut Tx| s.nearest(&label)
                     }),
             );
             if i % COLUMNS == COLUMNS - 1 || i + 1 == f.list.len() {
@@ -352,6 +455,27 @@ pub fn view(s: &Map, cx: &mut Cx<Map>) -> El {
             }
         }
         canvas = canvas.child(picker);
+    }
+    if let Some(sel) = &s.selected {
+        let y = match sel.y {
+            Some(y) if sel.likely => format!("  y ≈ {y}"),
+            Some(y) => format!("  y {y}"),
+            None => String::new(),
+        };
+        let tp = sel.tp();
+        let mut info = col().key("selected").pin(None, Some(10.0), Some(10.0), None).padding(10.0).gap(6.0).radius(8.0)
+            .fill(Color { r: 0.1, g: 0.1, b: 0.12, a: 0.9 })
+            .child(text(&sel.name).color(rgb(0.97, 0.97, 0.98)))
+            .child(text(format!("x {}  z {}{y}", sel.x, sel.z)).color(rgb(0.80, 0.82, 0.86)));
+        if sel.likely {
+            info = info.child(text("Likely: depends on the terrain height estimate").color(rgb(0.95, 0.75, 0.45)));
+        }
+        info = info.child(
+            row().gap(6.0)
+                .child(button("Copy /tp", false).key("copy-tp").on_press_tx(move |_s: &mut Map, tx: &mut Tx| tx.copy(tp.clone())))
+                .child(button("Close", false).key("close-selected").on_press(|s: &mut Map| s.selected = None)),
+        );
+        canvas = canvas.child(info);
     }
     if s.hovering {
         canvas = canvas.child(
@@ -419,6 +543,124 @@ pub fn view(s: &Map, cx: &mut Cx<Map>) -> El {
     }
     bar = bar.child(el().grow(1.0)).child(text("x 00000000  z 00000000   000.000 px/block").live_text(&s.readout).color(rgb(0.65, 0.68, 0.72)));
     col().w_full().h_full().child(bar).child(canvas)
+}
+
+/// The status line after a picker toggle.
+fn picker_hint(label: &str, on: bool, zoom: f64) -> String {
+    if !on || label == "Biomes" {
+        return String::new();
+    }
+    if label == "Slime Chunk" {
+        return if zoom < SLIME_ZOOM { "Zoom in to see slime chunks".into() } else { String::new() };
+    }
+    if label != "Spawn Point" && markers::kind(label).is_none() {
+        return format!("{label}: decoration features come in M4");
+    }
+    if zoom < STRUCTURE_ZOOM { "Zoom in to see structures. Right-click an icon to jump to the nearest one".into() } else { "Right-click an icon to jump to the nearest one".into() }
+}
+
+/// Structure, spawn and slime-chunk markers over the laid-out tiles.
+fn overlay(s: &Map, f: &Features, l: &Layout, mut world: El, scale: f64) -> El {
+    if l.tiles.is_empty() {
+        return world;
+    }
+    let span = tile_blocks(l.level);
+    let (mut x0, mut z0, mut x1, mut z1) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
+    for t in &l.tiles {
+        let o = t.origin();
+        x0 = x0.min(o[0]);
+        z0 = z0.min(o[1]);
+        x1 = x1.max(o[0] + span);
+        z1 = z1.max(o[1] + span);
+    }
+    let d = blocks_per_pixel(l.level) * l.scale;
+    let zoom = s.camera.zoom;
+
+    if f.is_on("Slime Chunk") && zoom >= SLIME_ZOOM {
+        let seed = s.tiles.world().map(|w| w.seed);
+        if let Some(seed) = seed {
+            let (cx0, cz0, cx1, cz1) = ((x0 / 16.0).floor() as i32, (z0 / 16.0).floor() as i32, (x1 / 16.0).ceil() as i32, (z1 / 16.0).ceil() as i32);
+            if ((cx1 - cx0) as i64) * ((cz1 - cz0) as i64) <= 60_000 {
+                for cz in cz0..cz1 {
+                    for cx in cx0..cx1 {
+                        if mcmap_worldgen::random::is_slime_chunk(seed, cx, cz) {
+                            let p = Map::point(l, [(cx * 16) as f64, (cz * 16) as f64]);
+                            world = world.child(
+                                el().key(format!("slime/{cx}/{cz}"))
+                                    .pin(Some(p[0] as f32), Some(p[1] as f32), None, None)
+                                    .size((16.0 / d) as f32, (16.0 / d) as f32)
+                                    .fill(Color { r: 0.30, g: 0.90, b: 0.25, a: 0.6 }),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let Some(sp) = &s.sprites else { return world };
+    let factor = scale.round().max(1.0) as u32;
+    let icon = |world: El, key: String, sprite: usize, block: [f64; 2], sel: Selected| -> El {
+        if sprite >= sp.len() {
+            return world;
+        }
+        let [w, h] = sp.size(sprite);
+        let p = Map::point(l, block);
+        world.child(
+            el().key(key)
+                .pin(Some((p[0] - w as f64 / 2.0) as f32), Some((p[1] - h as f64 / 2.0) as f32), None, None)
+                .size(w, h)
+                .live_scale(&s.inv_k)
+                .pixels(&sp.pixels(sprite, factor))
+                .on_press(move |s: &mut Map| s.selected = Some(sel.clone())),
+        )
+    };
+
+    let any = markers::KINDS.iter().any(|k| f.is_on(k.label));
+    if any && zoom >= STRUCTURE_ZOOM {
+        let r = (REGION * 16) as f64;
+        let (rx0, rz0, rx1, rz1) = ((x0 / r).floor() as i32, (z0 / r).floor() as i32, ((x1 / r).ceil() as i32) - 1, ((z1 / r).ceil() as i32) - 1);
+        let mut asked = Vec::new();
+        let mut found: Vec<Found> = Vec::new();
+        let c = s.camera.center;
+        let store = &s.markers;
+        store.begin_frame();
+        for rz in rz0..=rz1 {
+            for rx in rx0..=rx1 {
+                let mid = [(rx as f64 + 0.5) * r, (rz as f64 + 0.5) * r];
+                let pr = (mid[0] - c[0]).hypot(mid[1] - c[1]) / r;
+                asked.push((rx, rz));
+                if let Some(v) = store.request((rx, rz), pr) {
+                    found.extend(v.iter().cloned());
+                }
+            }
+        }
+        store.end_frame(&asked);
+        if f.is_on("Stronghold")
+            && let Some(sh) = s.markers.strongholds()
+        {
+            found.extend(sh.iter().cloned());
+        }
+        for st in &found {
+            let Some(k) = markers::kind_of(&st.structure) else { continue };
+            if !f.is_on(k.label) {
+                continue;
+            }
+            let (bx, bz) = (st.marker.0 as f64 + 0.5, st.marker.1 as f64 + 0.5);
+            if bx < x0 || bx > x1 || bz < z0 || bz > z1 {
+                continue;
+            }
+            let key = format!("structure/{}/{}/{}", st.structure, st.chunk.0, st.chunk.1);
+            world = icon(world, key, markers::sprite_for(k, &st.structure), [bx, bz], Selected::of(st));
+        }
+    }
+    if f.is_on("Spawn Point")
+        && let Some((x, z)) = s.markers.spawn()
+    {
+        let sel = Selected { name: "World spawn (search point)".into(), x, y: None, z, likely: true };
+        world = icon(world, "spawn".into(), markers::SPAWN_SPRITE, [x as f64 + 0.5, z as f64 + 0.5], sel);
+    }
+    world
 }
 
 fn rgb(r: f32, g: f32, b: f32) -> Color {

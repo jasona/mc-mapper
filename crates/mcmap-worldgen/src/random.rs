@@ -130,3 +130,98 @@ mod tests {
         }
     }
 }
+
+/// `LegacyRandomSource` / `WorldgenRandom`: the 48-bit LCG of `java.util.Random`, which the game
+/// still uses for structure placement, selection and slime chunks.
+#[derive(Clone, Debug)]
+pub struct Legacy {
+    seed: i64,
+}
+
+const LCG_MUL: i64 = 0x5_DEEC_E66D;
+const LCG_MASK: i64 = (1 << 48) - 1;
+
+impl Legacy {
+    pub fn new(seed: i64) -> Legacy {
+        Legacy { seed: (seed ^ LCG_MUL) & LCG_MASK }
+    }
+
+    pub fn set_seed(&mut self, seed: i64) {
+        self.seed = (seed ^ LCG_MUL) & LCG_MASK;
+    }
+
+    pub fn next(&mut self, bits: u32) -> i32 {
+        self.seed = (self.seed.wrapping_mul(LCG_MUL).wrapping_add(11)) & LCG_MASK;
+        (self.seed >> (48 - bits)) as i32
+    }
+
+    pub fn next_int(&mut self) -> i32 {
+        self.next(32)
+    }
+
+    /// `nextInt(bound)`, with the power-of-two shortcut and the rejection loop.
+    pub fn next_int_bounded(&mut self, bound: i32) -> i32 {
+        debug_assert!(bound > 0);
+        if bound & (bound - 1) == 0 {
+            return ((bound as i64 * self.next(31) as i64) >> 31) as i32;
+        }
+        loop {
+            let r = self.next(31);
+            let m = r % bound;
+            if r.wrapping_sub(m).wrapping_add(bound - 1) >= 0 {
+                return m;
+            }
+        }
+    }
+
+    pub fn next_long(&mut self) -> i64 {
+        let hi = self.next(32) as i64;
+        let lo = self.next(32) as i64;
+        (hi << 32).wrapping_add(lo)
+    }
+
+    pub fn next_float(&mut self) -> f32 {
+        self.next(24) as f32 * 5.960_464_5e-8
+    }
+
+    pub fn next_double(&mut self) -> f64 {
+        let hi = self.next(26) as i64;
+        let lo = self.next(27) as i64;
+        ((hi << 27) + lo) as f64 * 1.110_223_024_625_156_5e-16
+    }
+
+    /// `fork()`: a new source seeded from this one's next long.
+    pub fn fork(&mut self) -> Legacy {
+        Legacy::new(self.next_long())
+    }
+
+    /// `WorldgenRandom.setLargeFeatureSeed`.
+    pub fn large_feature(world: i64, x: i32, z: i32) -> Legacy {
+        let mut r = Legacy::new(world);
+        let a = r.next_long();
+        let b = r.next_long();
+        Legacy::new((x as i64).wrapping_mul(a) ^ (z as i64).wrapping_mul(b) ^ world)
+    }
+
+    /// `WorldgenRandom.setLargeFeatureWithSalt`.
+    pub fn large_feature_with_salt(world: i64, x: i32, z: i32, salt: i32) -> Legacy {
+        Legacy::new(
+            (x as i64)
+                .wrapping_mul(341_873_128_712)
+                .wrapping_add((z as i64).wrapping_mul(132_897_987_541))
+                .wrapping_add(world)
+                .wrapping_add(salt as i64),
+        )
+    }
+}
+
+/// Slime chunks: `WorldgenRandom.seedSlimeChunk(x, z, seed, 987234911).nextInt(10) == 0`.
+pub fn is_slime_chunk(world: i64, cx: i32, cz: i32) -> bool {
+    let s = world
+        .wrapping_add(cx.wrapping_mul(cx).wrapping_mul(4_987_142) as i64)
+        .wrapping_add(cx.wrapping_mul(5_947_611) as i64)
+        .wrapping_add(((cz.wrapping_mul(cz)) as i64).wrapping_mul(4_392_871))
+        .wrapping_add(cz.wrapping_mul(389_711) as i64)
+        ^ 987_234_911;
+    Legacy::new(s).next_int_bounded(10) == 0
+}

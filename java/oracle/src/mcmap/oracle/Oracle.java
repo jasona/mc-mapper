@@ -39,6 +39,9 @@ import net.minecraft.world.level.levelgen.densityfunction.SamplerContext;
  *   grid    <seed> <x0> <z0> <w> <h> <step> <out>   biome ids for a w*h grid of cells, step blocks apart
  *   params  <out.json>                              the Overworld biome parameter table, in tree order
  *   climgrid <seed> <x0> <z0> <w> <h> <step> <out>  raw surface climate values and biomes, for diff tests
+ *   dfgrid <seed> <function id> <x0> <z0> <w> <h> <step> <y> <out>  a density function's floats ("MCDF", w, h, then w*h f32)
+ *   templates <out.json>                           start pool and ruined portal template geometry (see Templates)
+ *   structs <seed> <cx0> <cz0> <cx1> <cz1> <out>     every Overworld structure attempt in a chunk range (see Structs)
  */
 public final class Oracle {
     /** Pass "surface" as y to evaluate at depth 0 instead of a fixed height. */
@@ -78,6 +81,9 @@ public final class Oracle {
             case "grid" -> grid(args);
             case "params" -> params(args[1]);
             case "climgrid" -> climgrid(args);
+            case "structs" -> Structs.run(registries, out, args);
+            case "dfgrid" -> dfgrid(args);
+            case "templates" -> Templates.run(args);
             default -> usage();
         }
         out.flush();
@@ -163,6 +169,25 @@ public final class Oracle {
             }
         }
         out.println("wrote " + gw + "x" + gh + " climate cells, " + names.size() + " biomes, to " + a[7]);
+    }
+
+    /** Any registered density function, sampled uncached at block positions on a horizontal grid. */
+    private static void dfgrid(String[] a) throws Exception {
+        long seed = Long.parseLong(a[1]);
+        NoiseGeneratorSettings settings = registries.lookupOrThrow(Registries.NOISE_SETTINGS).getOrThrow(NoiseGeneratorSettings.OVERWORLD).value();
+        RandomState random = RandomState.create(registries.lookupOrThrow(Registries.NOISE), seed, settings);
+        var df = registries.lookupOrThrow(Registries.DENSITY_FUNCTION)
+            .getOrThrow(ResourceKey.create(Registries.DENSITY_FUNCTION, net.minecraft.resources.Identifier.parse(a[2]))).value();
+        int x0 = Integer.parseInt(a[3]), z0 = Integer.parseInt(a[4]);
+        int gw = Integer.parseInt(a[5]), gh = Integer.parseInt(a[6]), step = Integer.parseInt(a[7]), y = Integer.parseInt(a[8]);
+        try (DataOutputStream o = new DataOutputStream(new BufferedOutputStream(new FileOutputStream(a[9])))) {
+            o.writeBytes("MCDF");
+            o.writeInt(gw); o.writeInt(gh);
+            for (int j = 0; j < gh; j++)
+                for (int i = 0; i < gw; i++)
+                    o.writeFloat(random.sampleBlockValueUncached(df, x0 + i * step, y, z0 + j * step));
+        }
+        out.println("wrote " + gw + "x" + gh + " values of " + a[2] + " to " + a[9]);
     }
 
     /**

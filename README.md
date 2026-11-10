@@ -4,17 +4,19 @@ A local Minecraft Java seed map in Rust, drawn with [Rune](https://github.com/an
 later show your live position from the running game. The plan is in
 [`docs/implementation-plan.md`](docs/implementation-plan.md).
 
-Status: **M2** (map app). The window draws 26.3 surface biomes for any seed. Its headless snapshot of the
-reference view matches `reference/biomes.png` in every cell, and the Rust biome core matches the game's
-own classes bit for bit (10.8M cells, 12 seeds). Structures (M3) and the live game position in the window
-(M5/M6) come next; `mcmap-cli spike` already shows the live position in a terminal.
+Status: **M3** (structures). The window draws 26.3 surface biomes for any seed, with structure,
+stronghold, spawn and slime-chunk layers and a nearest-structure search. Biomes match the game bit for
+bit (10.8M cells, 12 seeds). Structure placement, stronghold rings and the spawn search point match the
+game exactly; whether a placement actually generates agrees with the game 99.6% of the time (8,871
+candidates, 7 seeds; mineshafts are the weakest at 97.5%). The live game position in the window
+(M5/M6) comes next; `mcmap-cli spike` already shows it in a terminal.
 
 ## Layout
 
 | Path | What |
 | --- | --- |
 | `crates/mcmap-data` | `WorldId`, versions, launcher-install discovery, version-pack format, Java build helpers |
-| `crates/mcmap-worldgen` | Xoroshiro, Perlin/NormalNoise (single precision), climate density functions, the biome RTree |
+| `crates/mcmap-worldgen` | Xoroshiro and legacy randoms, noise, density functions, the biome RTree, terrain height estimate, structures, spawn, slime chunks |
 | `crates/mcmap-tiles` | Tile pyramid and `f64` camera, checkerboard tiles, atlas segmentation |
 | `crates/mcmap-live` | `PositionSource` seam, agent protocol and socket, F3+C parser, replay source |
 | `crates/mcmap-app` | The window (`mcmap`). The only crate that depends on Rune (pinned rev) |
@@ -53,13 +55,23 @@ MCMAP_SEED=<seed> cargo run -p mcmap-app --release   # another seed (default: th
 cargo run -p mcmap-cli --release -- render --seed <seed> --center 0,0 --ppb 0.25 --out biomes.png
 cargo run -p mcmap-cli --release -- calibrate        # the reference capture, cell for cell
 cargo run -p mcmap-app --release -- --snap out.png --scene home --scale 2   # headless snapshot
-                                              # scenes: home, zoomed-out, zoomed-in, far
+                                              # scenes: home, zoomed-out, zoomed-in, far, structures
 cargo run -q -p xtask -- extract --version 26.3            # version pack -> ~/.local/share/mcmap/packs/26.3.mcpack
 cargo run -q -p xtask -- oracle -- biome -7556262131344217808 2839 -1418 surface
 cargo run -q -p xtask -- oracle -- grid <seed> <x0> <z0> <w> <h> <step> out.bin surface
 cargo run -q -p xtask -- agent                             # build target/java/mcmap-agent.jar and self-check it
 cargo run -q -p xtask -- oracle -- climgrid <seed> <x0> <z0> <w> <h> <step> out.bin   # diff-test data
 cargo run -q -p xtask -- atlas                             # art/seed-map/map/marker-crops.json (labels by hand)
+cargo run -q -p xtask -- oracle structs <seed> <cx0> <cz0> <cx1> <cz1> out.ndjson   # the game's structures
+cargo run -q -p xtask -- oracle templates out.json        # jigsaw and ruined-portal geometry (extract runs it)
+```
+
+Packs extracted before M3 lack the template geometry: run `extract` again. The structure tests:
+
+```sh
+MCMAP_PACK=<pack> MCMAP_STRUCTS=<dir of structs dumps> cargo test -p mcmap-worldgen --release --test structures -- --ignored --nocapture
+MCMAP_PACK=<pack> cargo test -p mcmap-worldgen --release --test reference_view -- --ignored --nocapture   # the M3 gate
+cargo run -p mcmap-worldgen --release --example slime_ref -- art/seed-map/reference/features.png
 ```
 
 Run `extract` once before the map: without a pack the window falls back to the checkerboard. The
@@ -68,8 +80,11 @@ differential test is `MCMAP_PACK=<pack> MCMAP_DIFF=<dir of climgrid files> cargo
 
 In the window: type a seed (or any text, hashed the way the game does) in the seed field and press
 Return, or paste a seed-map link (`...#seed=...&x=...&z=...`) to jump there. Hover shows the block and
-biome under the pointer. The feature picker's toggles are in place for M3; only Biomes does anything
-yet. `MCMAP_REPLAY=docs/replay-sample.ndjson` plays a recorded path as the player position, with the
+biome under the pointer. Click a picker icon to show that layer; right-click it to jump to the nearest
+one (from the player while following, else the view centre). Click a marker for its coordinates and a
+Copy /tp button. Structures show from 0.15 px/block in, slime chunks from 0.75. Markers marked
+"likely" depend on the terrain height estimate. Decoration features (dungeons, geodes, fossils, caves)
+come in M4. `MCMAP_REPLAY=docs/replay-sample.ndjson` plays a recorded path as the player position, with the
 marker and a Follow button.
 
 ```sh

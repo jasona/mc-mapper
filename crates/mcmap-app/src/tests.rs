@@ -201,3 +201,37 @@ fn hover_reads_the_block_under_the_pointer() {
     let s = rt.state.hover_at([size[0] / 2.0, size[1] / 2.0]);
     assert_eq!(s, format!("{}, {}", HOME.center[0].floor() as i64, HOME.center[1].floor() as i64));
 }
+
+/// Every Overworld structure in the pack has a picker label (needs `MCMAP_PACK`).
+#[test]
+#[ignore]
+fn every_overworld_structure_has_a_layer() {
+    let pack = mcmap_data::pack::RawPack::read(std::path::Path::new(&std::env::var("MCMAP_PACK").unwrap())).unwrap();
+    let e = crate::markers::Engine::new(&pack, 1).unwrap();
+    let mut missing = Vec::new();
+    for set in &e.structures.sets {
+        for (s, _) in &set.entries {
+            // Nether and End structures have no Overworld biomes.
+            let other = matches!(s.kind, mcmap_worldgen::structure::Kind::Other(_)) || s.biomes.is_empty();
+            if !other && crate::markers::kind_of(&s.id).is_none() {
+                missing.push(s.id.clone());
+            }
+        }
+    }
+    assert!(missing.is_empty(), "no layer for {missing:?}");
+}
+
+#[test]
+fn nearest_search_finds_a_village_and_selects_it() {
+    let Ok(path) = std::env::var("MCMAP_PACK") else { return };
+    let pack = std::sync::Arc::new(mcmap_data::pack::RawPack::read(std::path::Path::new(&path)).unwrap());
+    let mut map = Map::new(None, None);
+    map.markers.sync = true;
+    map.markers.set_engine(Some(std::sync::Arc::new(crate::markers::Engine::new(&pack, -7556262131344217808).unwrap())));
+    map.nearest("Village");
+    assert!(map.take_marker_updates());
+    let sel = map.selected.clone().expect("a village");
+    assert!(sel.name.starts_with("Village"), "{sel:?}");
+    assert_eq!(map.camera.center, [sel.x as f64 + 0.5, sel.z as f64 + 0.5]);
+    assert!(sel.tp().starts_with("/tp @s "));
+}
