@@ -28,8 +28,7 @@ candidates, 7 seeds; mineshafts 97.5%). Nether fortresses, bastions and Nether r
 | `java/oracle` | Dev-only harness that runs the game's own biome code from your client jar |
 | `java/agent` | The read-only in-game agent, plus a stand-in game for testing attach |
 
-The folder is not a git repo yet: `git init -b main && git add -A && git commit -m "M0"`. The
-`.gitignore` already keeps `art/`, packs and build output out.
+The `.gitignore` keeps `art/`, packs and build output out.
 
 `art/` (Chunkbase-derived, personal use only) and version packs (Mojang's data) are git-ignored. Keep
 them out of any public repo.
