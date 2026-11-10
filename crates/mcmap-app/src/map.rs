@@ -61,7 +61,7 @@ pub struct Selected {
 impl Selected {
     pub fn of(f: &Found) -> Selected {
         // The marker is where the icon is; y is the generation point's estimate.
-        Selected { name: markers::display_name(&f.structure), x: f.marker.0, y: Some(f.pos.1), z: f.marker.1, likely: f.likely }
+        Selected { name: markers::display_name_of(f), x: f.marker.0, y: Some(f.pos.1), z: f.marker.1, likely: f.likely }
     }
 
     pub fn tp(&self) -> String {
@@ -256,7 +256,10 @@ impl Map {
         let [x, z] = self.camera.block_at(point, size);
         let (bx, bz) = (x.floor() as i64, z.floor() as i64);
         let biome = self.tiles.world().map(|w| {
-            let b = w.surface.biome((bx >> 2) as i32, 16, (bz >> 2) as i32);
+            let b = match (!w.surface.is_end() && self.camera.zoom > 2.0, i32::try_from(bx), i32::try_from(bz)) {
+                (true, Ok(ix), Ok(iz)) => w.surface.zoomed_biome(w.zoom_seed, ix, 64, iz),
+                _ => w.surface.biome((bx >> 2) as i32, 16, (bz >> 2) as i32),
+            };
             w.surface.names()[b.0 as usize].trim_start_matches("minecraft:").replace('_', " ")
         });
         match biome {
@@ -975,7 +978,7 @@ fn overlay(s: &Map, f: &Features, l: &Layout, mut world: El, scale: f64) -> El {
                 continue;
             }
             let key = format!("structure/{}/{}/{}", st.structure, st.chunk.0, st.chunk.1);
-            world = icon(world, key, markers::sprite_for(k, &st.structure), [bx, bz], Selected::of(st));
+            world = icon(world, key, markers::sprite_for(k, st), [bx, bz], Selected::of(st));
         }
     }
     if f.is_on_in("Spawn Point", s.dimension)

@@ -8,6 +8,7 @@
 pub mod climate;
 pub mod decoration;
 pub mod density;
+pub mod end_city;
 pub mod noise;
 pub mod random;
 pub mod rtree;
@@ -151,6 +152,42 @@ impl Surface {
         })
     }
 
+    /// End tile colour index: `0..=4` match [`END_BIOMES`], and `5` marks pure void (both the
+    /// 1,024-block exclusion ring outside the central Dragon Island and outer empty space where
+    /// `end/islands` drops below block generation).
+    #[inline]
+    pub fn end_tile_id(&self, x: i32, z: i32, close_zoom: bool, memo: &mut density::Memo) -> u16 {
+        let (sx, sz) = ((x >> 4) as i64, (z >> 4) as i64);
+        if sx * sx + sz * sz <= 4096 {
+            let r2 = (x as i64) * (x as i64) + (z as i64) * (z as i64);
+            return if r2 <= 84 * 84 {
+                0
+            } else if r2 <= 104 * 104 {
+                4
+            } else {
+                5
+            };
+        }
+        let (ex, ez) = if close_zoom {
+            (x, z)
+        } else {
+            (((x >> 4) * 2 + 1) * 8, ((z >> 4) * 2 + 1) * 8)
+        };
+        memo.reset(64);
+        let d = self.climate.erosion().eval_memo(ex, 64, ez, memo) as f64;
+        if d > 0.25 {
+            1
+        } else if d >= -0.0625 {
+            2
+        } else if d >= -0.21875 {
+            4
+        } else if d >= -0.36 {
+            3
+        } else {
+            5
+        }
+    }
+
     pub fn is_end(&self) -> bool {
         self.dimension == mcmap_data::Dimension::End
     }
@@ -181,6 +218,69 @@ impl Surface {
         }
         BiomeId(self.tree.search(&self.climate.surface_memo(qx, qz, memo), hint))
     }
+
+    /// `BiomeManager.getBiome` on the 2-D surface: the exact block biome after Voronoi zoom.
+    pub fn zoomed_biome(&self, zoom: i64, x: i32, y: i32, z: i32) -> BiomeId {
+        let (qx, _qy, qz) = fiddled_quart(zoom, x, y, z);
+        self.biome(qx, 16, qz)
+    }
+}
+
+/// `BiomeManager.getBiome` Voronoi cell selection: returns the winning quart `(qx, qy, qz)` for
+/// block `(x, y, z)` under `zoom` (`zoom_seed(seed)`).
+#[inline]
+pub fn fiddled_quart(zoom: i64, x: i32, y: i32, z: i32) -> (i32, i32, i32) {
+    let (i, j, k) = (x.wrapping_sub(2), y.wrapping_sub(2), z.wrapping_sub(2));
+    let (l, m, n) = (i >> 2, j >> 2, k >> 2);
+    let (d, e, f) = ((i & 3) as f64 * 0.25, (j & 3) as f64 * 0.25, (k & 3) as f64 * 0.25);
+    let mut best = 0;
+    let mut best_d = f64::INFINITY;
+    for o in 0..8 {
+        let (bx, by, bz) = (o & 4 == 0, o & 2 == 0, o & 1 == 0);
+        let p = if bx { l } else { l + 1 };
+        let q = if by { m } else { m + 1 };
+        let r = if bz { n } else { n + 1 };
+        let g = if bx { d } else { d - 1.0 };
+        let h = if by { e } else { e - 1.0 };
+        let s = if bz { f } else { f - 1.0 };
+        let dist = fiddled_distance(zoom, p, q, r, g, h, s);
+        if best_d > dist {
+            best = o;
+            best_d = dist;
+        }
+    }
+    (
+        if best & 4 == 0 { l } else { l + 1 },
+        if best & 2 == 0 { m } else { m + 1 },
+        if best & 1 == 0 { n } else { n + 1 },
+    )
+}
+
+#[inline(always)]
+pub(crate) fn zoom_lcg(a: i64, b: i64) -> i64 {
+    a.wrapping_mul(a.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407)).wrapping_add(b)
+}
+
+#[inline(always)]
+pub(crate) fn zoom_fiddle(l: i64) -> f64 {
+    let d = ((l >> 24) & 1023) as f64 * (1.0 / 1024.0);
+    (d - 0.5) * 0.9
+}
+
+#[inline]
+fn fiddled_distance(seed: i64, i: i32, j: i32, k: i32, d: f64, e: f64, f: f64) -> f64 {
+    let mut m = zoom_lcg(seed, i as i64);
+    m = zoom_lcg(m, j as i64);
+    m = zoom_lcg(m, k as i64);
+    m = zoom_lcg(m, i as i64);
+    m = zoom_lcg(m, j as i64);
+    m = zoom_lcg(m, k as i64);
+    let g = zoom_fiddle(m);
+    m = zoom_lcg(m, seed);
+    let h = zoom_fiddle(m);
+    m = zoom_lcg(m, seed);
+    let n = zoom_fiddle(m);
+    (f + n) * (f + n) + (e + h) * (e + h) + (d + g) * (d + g)
 }
 
 impl BiomeSampler for Surface {

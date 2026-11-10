@@ -65,30 +65,63 @@ pub const KINDS: &[Kind] = &[
     Kind { label: "Lava Pool", ids: &["lake_lava_surface"], sprite: 68 },
     Kind { label: "Desert Well", ids: &["desert_well"], sprite: 53 },
     Kind { label: "Nether Fortress", ids: &["fortress"], sprite: 32 },
-    Kind { label: "Bastion Remnant", ids: &["bastion_remnant"], sprite: 67 },
+    Kind { label: "Bastion Remnant", ids: &["bastion_remnant"], sprite: 7 },
     Kind { label: "Ruined Portal Nether", ids: &["ruined_portal_nether"], sprite: 41 },
     Kind { label: "End City", ids: &["end_city"], sprite: 23 },
 ];
 
-/// Picker entries the art manifest doesn't have (its picker is the Overworld's), drawn with
-/// marker sprites: (dimension, label, sprite). The bastion sprite is a guess from the art.
+/// Fallback picker entries for dimensions not listed in `manifest.json` when native rects are absent.
 pub const EXTRA_PICKER: &[(Dimension, &str, usize)] = &[
     (Dimension::Nether, "Nether Fortress", 32),
-    (Dimension::Nether, "Bastion Remnant", 67),
+    (Dimension::Nether, "Bastion Remnant", 7),
     (Dimension::Nether, "Ruined Portal Nether", 41),
     (Dimension::End, "End City", 23),
 ];
 
 pub const SPAWN_SPRITE: usize = 43;
 
-/// Village variants have their own heads in the atlas. Which head is which variant is a guess
-/// from the art (desert turban, snowy hood and so on), not checked against the reference.
-pub fn sprite_for(kind: &Kind, structure: &str) -> usize {
-    match structure.trim_start_matches("minecraft:") {
-        "village_desert" => 45,
-        "village_savanna" => 46,
-        "village_snowy" => 47,
-        "village_taiga" => 48,
+/// Marker atlas sprite for a generated structure, including sub-variants (Bastion types, End Ships,
+/// Zombie Villages, Giant Ruined Portals, Igloos with Basements and Large Ocean Ruins).
+pub fn sprite_for(kind: &Kind, found: &Found) -> usize {
+    let s = found.structure.trim_start_matches("minecraft:");
+    let v = found.variant.as_deref();
+    match s {
+        "bastion_remnant" => match v {
+            Some("bridge") => 3,
+            Some("hoglin_stable") => 4,
+            Some("treasure") => 5,
+            Some("units") => 6,
+            _ => 7,
+        },
+        "end_city" => match v {
+            Some("ship") => 22,
+            _ => 23,
+        },
+        "igloo" => match v {
+            Some("basement") => 26,
+            _ => 27,
+        },
+        "ocean_ruin_cold" | "ocean_ruin_warm" => match v {
+            Some("large") => 33,
+            _ => 34,
+        },
+        s if s == "ruined_portal" || s.starts_with("ruined_portal_") => match v {
+            Some("giant") => 40,
+            _ => 41,
+        },
+        s if s.starts_with("village_") => {
+            if v == Some("zombie") {
+                49
+            } else {
+                match s {
+                    "village_desert" => 45,
+                    "village_savanna" => 46,
+                    "village_snowy" => 47,
+                    "village_taiga" => 48,
+                    _ => 50,
+                }
+            }
+        }
         _ => kind.sprite,
     }
 }
@@ -114,6 +147,9 @@ pub fn kind(label: &str) -> Option<&'static Kind> {
 /// A readable name: "Village (plains)", "Ruined Portal (jungle)".
 pub fn display_name(structure: &str) -> String {
     let s = structure.trim_start_matches("minecraft:");
+    if s == "ruined_portal_nether" {
+        return "Ruined Portal Nether".to_string();
+    }
     let base = kind_of(structure).map(|k| k.label.trim_end_matches(" Overworld")).unwrap_or(s);
     let variant = s
         .strip_prefix("village_")
@@ -125,6 +161,33 @@ pub fn display_name(structure: &str) -> String {
     match variant {
         Some(v) => format!("{base} ({})", v.replace('_', " ")),
         None => base.to_string(),
+    }
+}
+
+/// Readable inspector title including generated sub-variants (e.g. "End City (with ship · Elytra)",
+/// "Bastion Remnant (treasure room)", "Village (plains, zombie)").
+pub fn display_name_of(found: &Found) -> String {
+    let s = found.structure.trim_start_matches("minecraft:");
+    let Some(v) = found.variant.as_deref() else {
+        return display_name(&found.structure);
+    };
+    let tag = match (s, v) {
+        ("bastion_remnant", "bridge") => "bridge",
+        ("bastion_remnant", "hoglin_stable") => "hoglin stables",
+        ("bastion_remnant", "treasure") => "treasure room",
+        ("bastion_remnant", "units") => "housing units",
+        ("end_city", "ship") => "with ship · Elytra",
+        ("igloo", "basement") => "with basement",
+        (_, "giant") => "giant",
+        (_, "large") => "large",
+        (_, "zombie") => "zombie",
+        (_, other) => other,
+    };
+    let base = display_name(&found.structure);
+    if let Some(prefix) = base.strip_suffix(')') {
+        format!("{prefix}, {tag})")
+    } else {
+        format!("{base} ({tag})")
     }
 }
 
@@ -158,7 +221,7 @@ struct CachedWorldMeta {
     strongholds: Vec<Found>,
 }
 
-const META_BLOB: &str = "rings_spawn_v1";
+const META_BLOB: &str = "rings_spawn_v2";
 
 /// One seed's structure engine.
 pub struct Engine {
@@ -215,7 +278,7 @@ impl Engine {
         for cz in cz0..cz0 + REGION {
             for cx in cx0..cx0 + REGION {
                 for c in d.chunk(&self.world, self.zoom, cx, cz) {
-                    out.push(Found { structure: c.feature, chunk: (cx, cz), pos: c.pos, likely: true, marker: (c.pos.0, c.pos.2) });
+                    out.push(Found { structure: c.feature, chunk: (cx, cz), pos: c.pos, likely: true, marker: (c.pos.0, c.pos.2), variant: None });
                 }
             }
         }

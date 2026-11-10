@@ -164,6 +164,10 @@ impl Legacy {
         self.next(32)
     }
 
+    pub fn next_boolean(&mut self) -> bool {
+        self.next(1) != 0
+    }
+
     /// `nextInt(bound)`, with the power-of-two shortcut and the rejection loop.
     pub fn next_int_bounded(&mut self, bound: i32) -> i32 {
         debug_assert!(bound > 0);

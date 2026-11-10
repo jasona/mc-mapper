@@ -42,6 +42,13 @@ pub struct Features {
     uploaded: RefCell<HashMap<(usize, u32), Pixels>>,
 }
 
+const EXTRA_ATLAS_ICONS: &[(mcmap_data::Dimension, &str, Rect)] = &[
+    (mcmap_data::Dimension::Nether, "Nether Fortress", Rect { x: 176, y: 22, w: 22, h: 22 }),
+    (mcmap_data::Dimension::Nether, "Bastion Remnant", Rect { x: 22, y: 44, w: 22, h: 22 }),
+    (mcmap_data::Dimension::Nether, "Ruined Portal Nether", Rect { x: 88, y: 44, w: 22, h: 22 }),
+    (mcmap_data::Dimension::End, "End City", Rect { x: 198, y: 0, w: 22, h: 22 }),
+];
+
 impl Features {
     pub fn load(art: &Path) -> Result<Features, String> {
         let mpath = art.join("manifest.json");
@@ -49,7 +56,7 @@ impl Features {
         let m: Manifest = serde_json::from_str(&text).map_err(|e| format!("{}: {e}", mpath.display()))?;
         let ipath = art.join(&m.sprites.file);
         let atlas = Rgba::decode(&std::fs::read(&ipath).map_err(|e| format!("{}: {e}", ipath.display()))?)?;
-        let list = m
+        let mut list: Vec<Feature> = m
             .sprites
             .rectangles
             .into_iter()
@@ -60,11 +67,23 @@ impl Features {
                 label: r.label,
             })
             .collect();
+        for &(dim, label, rect) in EXTRA_ATLAS_ICONS {
+            if rect.x + rect.w <= atlas.w && rect.y + rect.h <= atlas.h {
+                list.push(Feature {
+                    label: label.to_owned(),
+                    image: atlas.crop(rect),
+                    dimension: Some(dim),
+                });
+            }
+        }
         Ok(Features { list, on: ["Biomes".to_owned()].into(), uploaded: RefCell::new(HashMap::new()) })
     }
 
-    /// Add a picker entry for another dimension, with its icon scaled to the picker's size.
+    /// Add a picker entry for another dimension if not already loaded from the feature atlas.
     pub fn push(&mut self, label: &str, image: &Rgba, dimension: mcmap_data::Dimension) {
+        if self.list.iter().any(|f| f.label == label && f.dimension == Some(dimension)) {
+            return;
+        }
         let size = self.list.first().map(|f| f.image.w).unwrap_or(22);
         let image = image.fit(size, size);
         self.list.push(Feature { label: label.to_owned(), image, dimension: Some(dimension) });

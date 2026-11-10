@@ -192,8 +192,12 @@ pub enum Kind {
     Jigsaw { start_height: HeightSpec, project: Option<Heightmap>, start_pool: String, anchor: Option<String> },
     /// Desert pyramid, jungle temple: footprint, needs land above sea level.
     SinglePiece { width: i32, depth: i32 },
-    /// On top of the chunk centre: swamp hut, igloo, shipwreck, ocean ruin, buried treasure.
+    /// On top of the chunk centre: swamp hut, shipwreck, buried treasure.
     OnTop(Heightmap),
+    /// Igloo: on top of `WORLD_SURFACE_WG`, 50% chance of a basement after the rotation draw.
+    Igloo,
+    /// Ocean ruin: on `OCEAN_FLOOR_WG`, `large_probability` chance of a large ruin cluster.
+    OceanRuin { large_probability: f32 },
     Mineshaft,
     Monument,
     Mansion,
@@ -258,6 +262,10 @@ pub struct Found {
     /// piece centre for trial chambers, the template centre for ruined portals, otherwise the
     /// chunk centre.
     pub marker: (i32, i32),
+    /// Optional sub-variant (`"ship"`, `"bridge"`, `"hoglin_stable"`, `"treasure"`, `"units"`,
+    /// `"zombie"`, `"giant"`, `"basement"`, `"large"`).
+    #[serde(default)]
+    pub variant: Option<String>,
 }
 
 fn height_spec(v: &Value) -> Result<HeightSpec, String> {
@@ -293,9 +301,11 @@ impl Structure {
             },
             "desert_pyramid" => Kind::SinglePiece { width: 21, depth: 21 },
             "jungle_temple" => Kind::SinglePiece { width: 12, depth: 15 },
-            "swamp_hut" | "igloo" => Kind::OnTop(Heightmap::WorldSurface),
+            "swamp_hut" => Kind::OnTop(Heightmap::WorldSurface),
+            "igloo" => Kind::Igloo,
             "shipwreck" => Kind::OnTop(if v["is_beached"].as_bool().unwrap_or(false) { Heightmap::WorldSurface } else { Heightmap::OceanFloor }),
-            "ocean_ruin" | "buried_treasure" => Kind::OnTop(Heightmap::OceanFloor),
+            "ocean_ruin" => Kind::OceanRuin { large_probability: v.get("large_probability").and_then(Value::as_f64).unwrap_or(0.3) as f32 },
+            "buried_treasure" => Kind::OnTop(Heightmap::OceanFloor),
             "mineshaft" => Kind::Mineshaft,
             "ocean_monument" => Kind::Monument,
             "woodland_mansion" => Kind::Mansion,
@@ -330,6 +340,7 @@ impl Structure {
 #[derive(Clone, Debug)]
 struct PoolElement {
     empty: bool,
+    element: String,
     boxes: [[i32; 6]; 4],
     anchors: BTreeMap<String, [Vec<[i32; 3]>; 4]>,
 }
@@ -376,8 +387,9 @@ impl Geometry {
                         anchors.insert(name.clone(), per);
                     }
                 }
-                let empty = e["element"].as_str().is_some_and(|s| s.starts_with("Empty"));
-                elements.push(PoolElement { empty, boxes, anchors });
+                let element = e["element"].as_str().unwrap_or("").to_owned();
+                let empty = element.starts_with("Empty");
+                elements.push(PoolElement { empty, element, boxes, anchors });
             }
             g.pools.insert(id.clone(), Pool { order, elements });
         }
@@ -388,6 +400,26 @@ impl Geometry {
             }
         }
         Ok(g)
+    }
+}
+
+fn jigsaw_variant(structure_id: &str, element: &str) -> Option<String> {
+    if structure_id == "minecraft:bastion_remnant" {
+        if element.contains("bastion/bridge/") {
+            Some("bridge".into())
+        } else if element.contains("bastion/hoglin_stable/") {
+            Some("hoglin_stable".into())
+        } else if element.contains("bastion/treasure/") {
+            Some("treasure".into())
+        } else if element.contains("bastion/units/") {
+            Some("units".into())
+        } else {
+            None
+        }
+    } else if structure_id.starts_with("minecraft:village_") && element.contains("/zombie/") {
+        Some("zombie".into())
+    } else {
+        None
     }
 }
 
@@ -516,7 +548,7 @@ impl Structures {
         let (x0, z0) = (cx << 4, cz << 4);
         let found = |pos: (i32, i32, i32), likely: bool| {
             let marker = if s.id == "minecraft:trial_chambers" { (pos.0, pos.2) } else { (mx, mz) };
-            Found { structure: s.id.clone(), chunk: (cx, cz), pos, likely, marker }
+            Found { structure: s.id.clone(), chunk: (cx, cz), pos, likely, marker, variant: None }
         };
         let ok = |x: i32, y: i32, z: i32| s.biomes.contains(world.biome_at(x, y, z));
         // The structure's own random (`GenerationContext.random`).
@@ -533,6 +565,24 @@ impl Structures {
                     Heightmap::OceanFloor => world.floor_height(mx, mz),
                 } - 1;
                 ok(mx, y, mz).then(|| found((mx, y, mz), true))
+            }
+            Kind::Igloo => {
+                let y = world.surface_height(mx, mz) - 1;
+                if !ok(mx, y, mz) {
+                    return None;
+                }
+                let _rot = r.next_int_bounded(4);
+                let variant = (r.next_double() < 0.5).then(|| "basement".into());
+                Some(Found { variant, ..found((mx, y, mz), true) })
+            }
+            Kind::OceanRuin { large_probability } => {
+                let y = world.floor_height(mx, mz) - 1;
+                if !ok(mx, y, mz) {
+                    return None;
+                }
+                let _rot = r.next_int_bounded(4);
+                let variant = (r.next_float() <= *large_probability).then(|| "large".into());
+                Some(Found { variant, ..found((mx, y, mz), true) })
             }
             Kind::SinglePiece { width, depth } => {
                 let lowest = [(x0, z0), (x0 + width, z0), (x0, z0 + depth), (x0 + width, z0 + depth)]
@@ -564,7 +614,11 @@ impl Structures {
                 let (dx, dz) = match rot { 1 => (-5, 5), 2 => (-5, -5), 3 => (5, -5), _ => (5, 5) };
                 let islands = world.surface.climate.erosion();
                 let high = [(x, z), (x, z + dz), (x + dx, z), (x + dx, z + dz)].iter().all(|&(a, b)| islands.eval(a, 64, b) > 0.15);
-                (high && ok(x, 64, z)).then(|| found((x, 64, z), true))
+                if !(high && ok(x, 64, z)) {
+                    return None;
+                }
+                let variant = crate::end_city::has_ship(rot as u8, &mut r).then(|| "ship".into());
+                Some(Found { variant, ..found((x, 64, z), true) })
             }
             Kind::Mansion => {
                 let (x, z) = ((cx << 4) + 7, (cz << 4) + 7);
@@ -595,7 +649,9 @@ impl Structures {
                 if p != 0.0 && p != 1.0 {
                     r.next_float();
                 }
-                let name = if r.next_float() < 0.05 { GIANT_PORTALS[r.next_int_bounded(3) as usize] } else { PORTALS[r.next_int_bounded(10) as usize] };
+                let giant = r.next_float() < 0.05;
+                let name = if giant { GIANT_PORTALS[r.next_int_bounded(3) as usize] } else { PORTALS[r.next_int_bounded(10) as usize] };
+                let variant = giant.then(|| "giant".into());
                 let rot = r.next_int_bounded(4) as usize;
                 let mirror = if r.next_float() < 0.5 { 0 } else { 1 };
                 let b = g.portals.get(&format!("minecraft:ruined_portal/{name}"))?[mirror * 4 + rot];
@@ -604,7 +660,7 @@ impl Structures {
                 if setup.placement == Vertical::InNether {
                     // Nether biomes don't depend on y, so the biome check is exact; y is a guess.
                     let marker = ((bb[0] + bb[3] + 1) / 2, (bb[2] + bb[5] + 1) / 2);
-                    return ok(x0, 64, z0).then(|| Found { marker, ..found((x0, 64, z0), false) });
+                    return ok(x0, 64, z0).then(|| Found { marker, variant, ..found((x0, 64, z0), false) });
                 }
                 let floor = setup.placement == Vertical::OnOceanFloor;
                 let h = |x: i32, z: i32| if floor { world.floor_height(x, z) } else { world.surface_height(x, z) } - 1;
@@ -623,7 +679,7 @@ impl Structures {
                 let mut corners = [h(bb[0], bb[2]), h(bb[3], bb[2]), h(bb[0], bb[5]), h(bb[3], bb[5])];
                 corners.sort();
                 let y = j.min(corners[1]).max(min_y);
-                ok(x0, y, z0).then(|| Found { marker: ((bb[0] + bb[3] + 1) / 2, (bb[2] + bb[5] + 1) / 2), ..found((x0, y, z0), true) })
+                ok(x0, y, z0).then(|| Found { marker: ((bb[0] + bb[3] + 1) / 2, (bb[2] + bb[5] + 1) / 2), variant, ..found((x0, y, z0), true) })
             }
             Kind::Jigsaw { start_height, project, start_pool, anchor } => {
                 let base = match start_height {
@@ -631,12 +687,14 @@ impl Structures {
                     HeightSpec::Uniform(lo, hi) => lo + r.next_int_bounded(hi - lo + 1),
                 };
                 let (mut x, mut z) = (mx, mz);
+                let mut variant = None;
                 if let Some(pool) = self.geometry.as_ref().and_then(|g| g.pools.get(start_pool)) {
                     let rot = r.next_int_bounded(4) as usize;
                     let e = &pool.elements[pool.order[r.next_int_bounded(pool.order.len() as i32) as usize]];
                     if e.empty {
                         return None;
                     }
+                    variant = jigsaw_variant(&s.id, &e.element);
                     // The start piece sits at the chunk corner, or with its named jigsaw there.
                     let (mut ox, mut oz) = (x0, z0);
                     if let Some(a) = anchor {
@@ -653,7 +711,7 @@ impl Structures {
                     Some(Heightmap::OceanFloor) => world.floor_height(x, z) + base,
                     None => base,
                 };
-                ok(x, y, z).then(|| found((x, y, z), project.is_some()))
+                ok(x, y, z).then(|| Found { variant, ..found((x, y, z), project.is_some()) })
             }
         }
     }

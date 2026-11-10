@@ -98,53 +98,8 @@ impl Rng {
 /// `BiomeManager.getBiome`: the biome the game reports at a block, from the noise biomes around
 /// it, jittered by the zoom seed.
 pub fn zoomed_biome(world: &World, zoom: i64, x: i32, y: i32, z: i32, hint: &mut Option<u32>) -> BiomeId {
-    let (i, j, k) = (x - 2, y - 2, z - 2);
-    let (l, m, n) = (i >> 2, j >> 2, k >> 2);
-    let (d, e, f) = ((i & 3) as f64 / 4.0, (j & 3) as f64 / 4.0, (k & 3) as f64 / 4.0);
-    let mut best = 0;
-    let mut best_d = f64::INFINITY;
-    for o in 0..8 {
-        let (bx, by, bz) = (o & 4 == 0, o & 2 == 0, o & 1 == 0);
-        let p = if bx { l } else { l + 1 };
-        let q = if by { m } else { m + 1 };
-        let r = if bz { n } else { n + 1 };
-        let g = if bx { d } else { d - 1.0 };
-        let h = if by { e } else { e - 1.0 };
-        let s = if bz { f } else { f - 1.0 };
-        let dist = fiddled_distance(zoom, p, q, r, g, h, s);
-        if best_d > dist {
-            best = o;
-            best_d = dist;
-        }
-    }
-    let p = if best & 4 == 0 { l } else { l + 1 };
-    let q = if best & 2 == 0 { m } else { m + 1 };
-    let r = if best & 1 == 0 { n } else { n + 1 };
+    let (p, q, r) = crate::fiddled_quart(zoom, x, y, z);
     world.biome(p, q, r, hint)
-}
-
-fn lcg(a: i64, b: i64) -> i64 {
-    a.wrapping_mul(a.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407)).wrapping_add(b)
-}
-
-fn fiddle(l: i64) -> f64 {
-    let d = (l >> 24).rem_euclid(1024) as f64 / 1024.0;
-    (d - 0.5) * 0.9
-}
-
-fn fiddled_distance(seed: i64, i: i32, j: i32, k: i32, d: f64, e: f64, f: f64) -> f64 {
-    let mut m = lcg(seed, i as i64);
-    m = lcg(m, j as i64);
-    m = lcg(m, k as i64);
-    m = lcg(m, i as i64);
-    m = lcg(m, j as i64);
-    m = lcg(m, k as i64);
-    let g = fiddle(m);
-    m = lcg(m, seed);
-    let h = fiddle(m);
-    m = lcg(m, seed);
-    let n = fiddle(m);
-    (f + n) * (f + n) + (e + h) * (e + h) + (d + g) * (d + g)
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -452,11 +407,9 @@ impl Walk<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn fiddle_matches_known_values() {
-        assert!((fiddle(0) + 0.45).abs() < 1e-12);
-        assert_eq!(lcg(1, 2), 6364136223846793005i64.wrapping_add(1442695040888963407).wrapping_add(2));
+        assert!((crate::zoom_fiddle(0) + 0.45).abs() < 1e-12);
+        assert_eq!(crate::zoom_lcg(1, 2), 6364136223846793005i64.wrapping_add(1442695040888963407).wrapping_add(2));
     }
 }

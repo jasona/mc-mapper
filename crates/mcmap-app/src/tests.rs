@@ -445,3 +445,96 @@ fn nearest_search_finds_decoration_features() {
         assert!(sel.name.starts_with(name) && sel.likely, "{sel:?}");
     }
 }
+
+#[test]
+fn variant_sprites_and_display_names_distinguish_subvariants() {
+    use crate::markers::{display_name_of, kind_of, sprite_for};
+    use mcmap_worldgen::structure::Found;
+
+    let mk = |structure: &str, variant: Option<&str>| Found {
+        structure: format!("minecraft:{structure}"),
+        chunk: (0, 0),
+        pos: (8, 64, 8),
+        marker: (8, 8),
+        likely: false,
+        variant: variant.map(str::to_owned),
+    };
+    let check = |structure: &str, variant: Option<&str>, want_sprite: usize, want_name: &str| {
+        let f = mk(structure, variant);
+        let k = kind_of(&f.structure).unwrap();
+        assert_eq!(sprite_for(k, &f), want_sprite, "{structure} {variant:?}");
+        assert_eq!(display_name_of(&f), want_name, "{structure} {variant:?}");
+    };
+
+    // Bastion Remnant never uses Raw Copper Ore (67); generic is 7 and the 4 types are 3..=6.
+    check("bastion_remnant", None, 7, "Bastion Remnant");
+    check("bastion_remnant", Some("bridge"), 3, "Bastion Remnant (bridge)");
+    check("bastion_remnant", Some("hoglin_stable"), 4, "Bastion Remnant (hoglin stables)");
+    check("bastion_remnant", Some("treasure"), 5, "Bastion Remnant (treasure room)");
+    check("bastion_remnant", Some("units"), 6, "Bastion Remnant (housing units)");
+
+    // End City with Elytra ship vs plain tower.
+    check("end_city", None, 23, "End City");
+    check("end_city", Some("ship"), 22, "End City (with ship · Elytra)");
+
+    // Igloo, Ocean Ruins, Ruined Portals, Zombie Villages.
+    check("igloo", None, 27, "Igloo");
+    check("igloo", Some("basement"), 26, "Igloo (with basement)");
+    check("ocean_ruin_warm", None, 34, "Ocean Ruins (warm)");
+    check("ocean_ruin_warm", Some("large"), 33, "Ocean Ruins (warm, large)");
+    check("ruined_portal_jungle", None, 41, "Ruined Portal (jungle)");
+    check("ruined_portal_jungle", Some("giant"), 40, "Ruined Portal (jungle, giant)");
+    check("ruined_portal_nether", Some("giant"), 40, "Ruined Portal Nether (giant)");
+    check("village_plains", None, 50, "Village (plains)");
+    check("village_desert", None, 45, "Village (desert)");
+    check("village_plains", Some("zombie"), 49, "Village (plains, zombie)");
+}
+
+#[test]
+fn native_nether_and_end_picker_icons_load_from_feature_atlas() {
+    let art = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../art/seed-map");
+    let mut features = crate::features::Features::load(&art).expect("load feature atlas");
+    let count_before = features.list.len();
+    for (dim, label) in [
+        (mcmap_data::Dimension::Nether, "Nether Fortress"),
+        (mcmap_data::Dimension::Nether, "Bastion Remnant"),
+        (mcmap_data::Dimension::Nether, "Ruined Portal Nether"),
+        (mcmap_data::Dimension::End, "End City"),
+    ] {
+        assert!(features.list.iter().any(|f| f.label == label && f.dimension == Some(dim)), "missing native {label}");
+        // Fallback push is a no-op because the native 22x22 icon is already present.
+        features.push(label, &atlas(), dim);
+    }
+    assert_eq!(features.list.len(), count_before);
+}
+
+#[test]
+fn zoom_standin_synthesizes_from_parent_and_child_tiles() {
+    let Ok(path) = std::env::var("MCMAP_PACK") else { return };
+    let pack = mcmap_data::pack::RawPack::read(std::path::Path::new(&path)).unwrap();
+    let surface = mcmap_worldgen::Surface::for_dimension(&pack, 12345, mcmap_data::Dimension::Overworld).unwrap();
+    let world = crate::tiles::World::new(12345, surface);
+
+    let parent = TileKey { level: 0, x: 0, z: 0 };
+    let child_br = TileKey { level: -1, x: 1, z: 1 };
+    assert!(world.standin_rgba(child_br, false).is_none());
+
+    // Warming the parent lets zooming in synthesize the bottom-right child immediately.
+    world.warm_tile(parent);
+    let parent_px = world.standin_rgba(TileKey { level: -1, x: 0, z: 0 }, false).expect("top-left child stand-in");
+    let br_px = world.standin_rgba(child_br, false).expect("bottom-right child stand-in");
+    assert_eq!(parent_px.len(), 256 * 256 * 4);
+    assert_eq!(br_px.len(), 256 * 256 * 4);
+
+    // Warming children of an uncached outer tile lets zooming out synthesize a 2x2 downsample.
+    let outer = TileKey { level: 2, x: 10, z: -7 };
+    assert!(world.standin_rgba(outer, false).is_none());
+    for dz in 0..2 {
+        for dx in 0..2 {
+            world.warm_tile(TileKey { level: 1, x: outer.x * 2 + dx, z: outer.z * 2 + dz });
+        }
+    }
+    let down = world.standin_rgba(outer, false).expect("downsampled parent stand-in");
+    assert_eq!(down.len(), 256 * 256 * 4);
+}
+

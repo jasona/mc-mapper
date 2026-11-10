@@ -44,7 +44,10 @@ impl TileCache {
     pub fn for_world(version: &str, names: &[String], seed: i64, dimension: Dimension, preset: Preset) -> Option<TileCache> {
         let table = mcmap_data::seeds::sha256(names.join(",").as_bytes());
         let table: String = table[..4].iter().map(|b| format!("{b:02x}")).collect();
-        let dim = dimension.key().trim_start_matches("minecraft:").to_owned();
+        let dim = match dimension {
+            Dimension::End => "the_end_v3".to_owned(),
+            _ => dimension.key().trim_start_matches("minecraft:").to_owned(),
+        };
         let preset = match preset {
             Preset::Normal => "default",
             Preset::LargeBiomes => "large_biomes",
@@ -76,11 +79,11 @@ impl TileCache {
 
     /// The tile's hillshade, if cached.
     pub fn get_shade(&self, key: TileKey, len: usize) -> Option<Vec<u8>> {
-        self.read(key, "shade.zst", len)
+        self.read(key, "shade3.zst", len)
     }
 
     pub fn put_shade(&self, key: TileKey, shade: &[u8]) {
-        self.write_file(&self.path_of(key, "shade.zst"), shade);
+        self.write_file(&self.path_of(key, "shade3.zst"), shade);
     }
 
     /// World-level cached blob (e.g. spawn + stronghold rings).
