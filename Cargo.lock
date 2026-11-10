@@ -1784,6 +1784,7 @@ dependencies = [
  "mcmap-data",
  "serde",
  "serde_json",
+ "wl-clipboard-rs",
 ]
 
 [[package]]

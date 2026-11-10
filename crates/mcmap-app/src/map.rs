@@ -17,7 +17,9 @@ use crate::tiles::{TileStore, World};
 use mcmap_data::link::{parse_link, seed_from_text};
 use mcmap_data::pack::RawPack;
 use mcmap_data::Dimension;
-use mcmap_live::Fix;
+use crate::live;
+use mcmap_data::seeds::{zoom_seed, SeedStore};
+use mcmap_live::{Fix, SourceKind};
 use mcmap_tiles::pyramid::{blocks_per_pixel, tile_blocks, Camera, TileKey, TILE};
 use mcmap_worldgen::structure::Found;
 use mcmap_worldgen::BiomeSampler;
@@ -34,6 +36,11 @@ pub const HOME: Camera = Camera { center: [2839.0, -1418.0], zoom: 1.25 };
 pub const BAR: f32 = 40.0;
 
 const MARKER: f32 = 14.0;
+/// The heading dot: its size and its distance from the marker's centre.
+const HEADING: f32 = 6.0;
+const HEADING_R: f64 = 11.0;
+/// A fix older than this many seconds is stale: the marker dims.
+pub const STALE_SECS: f64 = 10.0;
 
 /// Structure markers show from this zoom (px per block) in; further out they would be thousands.
 pub const STRUCTURE_ZOOM: f64 = 0.15;
@@ -97,6 +104,18 @@ pub struct Map {
     pub player: Option<Fix>,
     pub follow: bool,
     pub fixes: Option<Receiver<Fix>>,
+    /// Notes and session changes from the live sources (`live::start`).
+    pub live: Option<live::Live>,
+    /// The running game and its launcher world, from the session scan.
+    pub session: Option<live::Session>,
+    /// Seeds the map has learned, by zoom seed and quick-play id.
+    pub seeds: SeedStore,
+    /// The zoom seed of a world the map doesn't know yet: the next matching seed typed is kept.
+    pub pending_zoom: Option<i64>,
+    heading_at: Live<[f32; 2]>,
+    age: LiveText,
+    /// The marker is dimmed (its fix is older than `STALE_SECS`).
+    pub stale: bool,
     /// The pointer is over the canvas: show the hover readout.
     pub hovering: bool,
     /// Draw the whole marker atlas as a grid (M0 check, `MCMAP_SPRITE_DEMO`).
@@ -128,6 +147,13 @@ impl Map {
             player: None,
             follow: false,
             fixes: None,
+            live: None,
+            session: None,
+            seeds: SeedStore::default(),
+            pending_zoom: None,
+            heading_at: Live::new([0.0, 0.0]),
+            age: LiveText::new(""),
+            stale: false,
             hovering: false,
             sprite_demo: true,
             markers: MarkerStore::new(),
@@ -163,6 +189,10 @@ impl Map {
         if let Some(p) = &self.player {
             let s = self.camera.point_of([p.pos[0], p.pos[2]], l.size);
             self.player_at.set([(s[0] - MARKER as f64 / 2.0) as f32, (s[1] - MARKER as f64 / 2.0) as f32]);
+            // Yaw 0 faces +z (down the screen), 90 faces -x.
+            let a = (p.yaw as f64).to_radians();
+            let h = [s[0] - a.sin() * HEADING_R, s[1] + a.cos() * HEADING_R];
+            self.heading_at.set([(h[0] - HEADING as f64 / 2.0) as f32, (h[1] - HEADING as f64 / 2.0) as f32]);
         }
     }
 
@@ -248,6 +278,52 @@ impl Map {
         let dimension = link.as_ref().and_then(|l| l.dimension).unwrap_or(self.dimension);
         self.load_world(seed, dimension);
         self.seed_field = TextEdit::new(&seed.to_string());
+        self.learn_seed(seed);
+    }
+
+    /// A seed was typed: keep it for the world the player is in, when that is safe to say. With
+    /// the agent's zoom seed the seed must hash to it; without one (F3+C only) it is paired with
+    /// the launcher's last-played world while the game runs.
+    fn learn_seed(&mut self, seed: i64) {
+        let quick_play = self.session.as_ref().and_then(|s| s.quick_play.as_ref());
+        let zoom = self.player.as_ref().and_then(|p| p.world.zoom_seed).or(self.pending_zoom);
+        let name = self.player.as_ref().and_then(|p| p.world.server.clone()).or_else(|| quick_play.and_then(|q| q.name.clone()));
+        let key = quick_play.map(|q| q.key());
+        let keep = match zoom {
+            Some(z) if z == zoom_seed(seed) => true,
+            Some(_) => {
+                self.status = "That seed isn't the one of the world you're in; showing it, not remembering it".into();
+                false
+            }
+            None => self.player.is_some() && key.is_some(),
+        };
+        if !keep {
+            return;
+        }
+        self.pending_zoom = None;
+        if self.seeds.remember(seed, name.clone(), key) {
+            match self.seeds.save() {
+                Ok(()) => self.status = format!("Remembered the seed for {}", name.as_deref().unwrap_or("this world")),
+                Err(e) => self.status = format!("Couldn't save the seed: {e}"),
+            }
+        }
+    }
+
+    /// The seed of the world the player is in, as far as the map can tell.
+    fn world_seed(&self, f: &Fix) -> Option<i64> {
+        if let Some(s) = f.world.seed {
+            return Some(s);
+        }
+        if let Some(z) = f.world.zoom_seed {
+            if let Some(w) = self.tiles.world()
+                && zoom_seed(w.seed) == z
+            {
+                return Some(w.seed);
+            }
+            return self.seeds.by_zoom(z).map(|w| w.seed);
+        }
+        let q = self.session.as_ref()?.quick_play.as_ref()?;
+        self.seeds.by_quick_play(&q.key()).map(|w| w.seed)
     }
 
     /// Switch dimension. The view keeps its place: Nether coordinates are an eighth of the
@@ -302,23 +378,70 @@ impl Map {
         }
     }
 
-    /// Take queued position fixes. True when the view must re-run (the first fix, or a camera
-    /// move that changes the visible tiles); live values are updated either way.
+    /// Take queued position fixes. True when the view must re-run (the first fix, a world or
+    /// dimension change, or a camera move that changes the visible tiles); live values are
+    /// updated either way.
     pub fn take_fixes(&mut self, tx: &mut Tx) -> bool {
         let Some(rx) = &self.fixes else { return false };
         let mut last = None;
         while let Ok(f) = rx.try_recv() {
             last = Some(f);
         }
-        let Some(f) = last else { return false };
-        let first = self.player.is_none();
-        self.player = Some(f);
-        if first {
-            return true;
+        match last {
+            Some(f) => self.apply_fix(f, tx),
+            None => false,
         }
+    }
+
+    /// Take one fix from any source.
+    pub fn apply_fix(&mut self, f: Fix, tx: &mut Tx) -> bool {
+        // The agent is better than a copied line: a fresh agent fix wins over the clipboard.
+        if f.source == SourceKind::Clipboard && self.player.as_ref().is_some_and(|p| p.source == SourceKind::Agent) && !self.stale {
+            return false;
+        }
+        let first = self.player.is_none();
+        // A replay carries no world: it plays over whatever seed is shown.
+        let new_world = f.source != SourceKind::Replay && self.player.as_ref().is_none_or(|p| p.world != f.world);
+        let mut rerun = first || self.stale;
+        self.stale = false;
+        if first {
+            self.follow = true;
+        }
+        if new_world {
+            // A different world: switch to its seed if known, else ask for it once.
+            match self.world_seed(&f) {
+                Some(seed) => {
+                    let d = f.dimension.unwrap_or(self.dimension);
+                    if self.tiles.world().is_none_or(|w| w.seed != seed) {
+                        self.load_world(seed, d);
+                        self.seed_field = TextEdit::new(&seed.to_string());
+                        self.pending_zoom = None;
+                        rerun = true;
+                    }
+                }
+                None => {
+                    self.pending_zoom = f.world.zoom_seed;
+                    let place = f.world.server.clone().unwrap_or_else(|| "this world".into());
+                    self.status = format!("Type the seed of {place} once and the map remembers it");
+                    rerun = true;
+                }
+            }
+        }
+        if self.follow
+            && let Some(d) = f.dimension
+            && d != self.dimension
+        {
+            self.set_dimension(d);
+            rerun = true;
+        }
+        self.player = Some(f);
+        self.age.set(self.age_text());
         if self.follow {
             let p = self.player.as_ref().unwrap().pos;
             self.camera.center = [p[0], p[2]];
+        }
+        if rerun {
+            return true;
         }
         let shown = self.shown.borrow().clone();
         match shown {
@@ -331,6 +454,98 @@ impl Map {
                 true
             }
             None => true,
+        }
+    }
+
+    pub fn refresh_age(&self) {
+        self.age.set(self.age_text());
+    }
+
+    /// Seconds since the last fix.
+    pub fn fix_age(&self) -> Option<f64> {
+        let p = self.player.as_ref()?;
+        Some(p.taken_at.elapsed().map(|d| d.as_secs_f64()).unwrap_or(0.0))
+    }
+
+    fn age_text(&self) -> String {
+        let Some(p) = &self.player else { return String::new() };
+        let src = match p.source {
+            SourceKind::Agent => "agent",
+            SourceKind::Clipboard => "F3+C",
+            SourceKind::Replay => "replay",
+        };
+        let age = self.fix_age().unwrap_or(0.0);
+        if age < 2.0 { format!("{src}, live") } else if age < 120.0 { format!("{src}, {age:.0} s ago") } else { format!("{src}, {:.0} min ago", age / 60.0) }
+    }
+
+    /// Drain the live sources' notes and session changes, and refresh the fix age. True when
+    /// the view must re-run.
+    pub fn take_live_events(&mut self, tx: &mut Tx) -> bool {
+        let mut events = Vec::new();
+        if let Some(l) = &self.live {
+            while let Ok(e) = l.events.try_recv() {
+                events.push(e);
+            }
+        }
+        let mut rerun = false;
+        for e in events {
+            match e {
+                live::Event::Note(n) => {
+                    self.status = n;
+                    rerun = true;
+                }
+                live::Event::Session(s) => {
+                    rerun |= self.set_session(s);
+                }
+                live::Event::Tick => {}
+            }
+        }
+        if self.player.is_some() {
+            self.age.set(self.age_text());
+            let stale = self.fix_age().is_some_and(|a| a > STALE_SECS);
+            if stale != self.stale {
+                self.stale = stale;
+                rerun = true;
+            }
+            if !rerun {
+                tx.live_only();
+            }
+        }
+        rerun
+    }
+
+    /// The running game changed. Before any fix arrives, show the launcher world's seed if the
+    /// map knows it.
+    pub fn set_session(&mut self, s: Option<live::Session>) -> bool {
+        self.session = s;
+        let Some(sess) = &self.session else {
+            self.status = "Game closed".into();
+            return true;
+        };
+        let place = sess.quick_play.as_ref().and_then(|q| q.name.clone());
+        self.status = format!("Game found{}", place.as_deref().map(|n| format!(": {n}")).unwrap_or_default());
+        if self.player.is_none()
+            && let Some(q) = &sess.quick_play
+            && let Some(w) = self.seeds.by_quick_play(&q.key())
+        {
+            let seed = w.seed;
+            self.load_world(seed, self.dimension);
+            self.seed_field = TextEdit::new(&seed.to_string());
+            self.status = format!("Game found: {}, seed {seed}", place.as_deref().unwrap_or("last world"));
+        }
+        true
+    }
+
+    /// Text from the clipboard or a paste: an F3+C line becomes a fix.
+    pub fn clipboard_text(&mut self, t: &str, tx: &mut Tx) -> bool {
+        match mcmap_live::protocol::parse_f3c(t.trim()) {
+            Some(f) if self.player.as_ref().is_none_or(|p| p.source == SourceKind::Clipboard || self.stale) => {
+                if self.player.as_ref().is_some_and(|p| p.source == SourceKind::Clipboard && p.pos == f.pos && p.yaw == f.yaw) {
+                    return false;
+                }
+                self.apply_fix(f, tx)
+            }
+            _ => false,
         }
     }
 }
@@ -445,11 +660,17 @@ pub fn view(s: &Map, cx: &mut Cx<Map>) -> El {
     *s.shown.borrow_mut() = (size[0] > 0.0).then_some(l);
 
     let mut canvas = el().key("canvas").w_full().grow(1.0).clip_soft(0.0).fill(rgb(0.08, 0.08, 0.1)).child(world);
-    if s.player.is_some() {
-        canvas = canvas.child(
-            el().key("player").pin(Some(0.0), Some(0.0), None, None).size(MARKER, MARKER).live_offset(&s.player_at)
-                .radius(MARKER / 2.0).fill(rgb(0.95, 0.25, 0.2)).border(2.5, Color::WHITE),
-        );
+    if s.player.as_ref().is_some_and(|p| p.dimension.is_none_or(|d| d == s.dimension)) {
+        let o = if s.stale { 0.45 } else { 1.0 };
+        canvas = canvas
+            .child(
+                el().key("player").pin(Some(0.0), Some(0.0), None, None).size(MARKER, MARKER).live_offset(&s.player_at)
+                    .radius(MARKER / 2.0).fill(rgb(0.95, 0.25, 0.2)).border(2.5, Color::WHITE).opacity(o),
+            )
+            .child(
+                el().key("heading").pin(Some(0.0), Some(0.0), None, None).size(HEADING, HEADING).live_offset(&s.heading_at)
+                    .radius(HEADING / 2.0).fill(Color::WHITE).opacity(o),
+            );
     }
     if let Some(f) = &s.features {
         let factor = scale.round().max(1.0) as u32;
@@ -569,11 +790,33 @@ pub fn view(s: &Map, cx: &mut Cx<Map>) -> El {
             }
         }));
     }
+    if s.player.is_some() {
+        bar = bar.child(text("F3+C, 0000 min ago").live_text(&s.age).color(if s.stale { rgb(0.6, 0.6, 0.62) } else { rgb(0.55, 0.85, 0.55) }));
+    }
     if !s.status.is_empty() {
         bar = bar.child(text(&s.status).color(rgb(0.95, 0.75, 0.45)));
     }
     bar = bar.child(el().grow(1.0)).child(text("x 00000000  z 00000000   000.000 px/block").live_text(&s.readout).color(rgb(0.65, 0.68, 0.72)));
-    col().w_full().h_full().child(bar).child(canvas)
+    let root = col().w_full().h_full().child(bar).child(canvas).on_paste(|s: &mut Map, t: &str, tx: &mut Tx| {
+        if !s.clipboard_text(t, tx) && parse_link(t).is_some() {
+            // A seed-map link pasted on the map: same as the seed field.
+            s.seed_field = TextEdit::new(t.trim());
+            s.submit_seed();
+        }
+    });
+    // Without a background clipboard watch, read it when the window comes back into focus:
+    // press F3+C in the game, switch to the map, and the position is there.
+    if s.live.as_ref().is_some_and(|l| l.watch != mcmap_live::clipboard::Watch::Available) {
+        root.on_window_focus(|_s: &mut Map, focused: bool, tx: &mut Tx| {
+            if focused {
+                tx.read_clipboard(|s: &mut Map, c, tx| {
+                    s.clipboard_text(c.text(), tx);
+                });
+            }
+        })
+    } else {
+        root
+    }
 }
 
 /// The status line after a picker toggle.

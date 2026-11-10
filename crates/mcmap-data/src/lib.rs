@@ -7,6 +7,7 @@ pub mod install;
 pub mod java;
 pub mod link;
 pub mod pack;
+pub mod seeds;
 mod world;
 
 pub use world::{Dimension, McVersion, Preset, WorldId};

@@ -6,5 +6,7 @@ pub mod agent;
 mod fix;
 pub mod protocol;
 pub mod replay;
+pub mod session;
+pub mod clipboard;
 
 pub use fix::{spawn, Fix, FixSink, PositionSource, SourceKind, StopToken, Stopper, WorldHint};

@@ -11,10 +11,15 @@
 //! changes it. The version pack is `$MCMAP_PACK`, else the data directory's 26.3 pack; without
 //! one the map shows the M0 checkerboard.
 //!
-//! `MCMAP_REPLAY=path.ndjson` plays a recorded path as the player position (see
-//! `mcmap_live::replay`), which turns on the player marker and the Follow button.
+//! Live position: the window listens for the in-game agent on 127.0.0.1:47123, finds the running
+//! game every few seconds and attaches the agent to it with `jcmd` (`MCMAP_AUTO_ATTACH=0` stops
+//! that), and watches the clipboard for F3+C lines where the compositor allows it (else it reads
+//! the clipboard when the window regains focus, and on paste). `MCMAP_REPLAY=path.ndjson` plays
+//! a recorded path. `MCMAP_LIVE=0` turns all of it off. Seeds typed for a world are kept in
+//! `<data dir>/worlds.json`, matched by the agent's zoom seed or the launcher's last world.
 
 mod features;
+mod live;
 mod map;
 mod markers;
 mod sprites;
@@ -23,6 +28,7 @@ mod tiles;
 use map::Map;
 use mcmap_data::link::seed_from_text;
 use mcmap_data::pack::{pack_path, RawPack};
+use mcmap_data::seeds::SeedStore;
 use mcmap_live::replay::ReplaySource;
 use rune::{AppSpec, Tx, Waker};
 use std::path::PathBuf;
@@ -79,40 +85,36 @@ fn init() -> Map {
     map
 }
 
-/// Start the position source, if one is configured. Fixes go through a forwarding thread that
-/// wakes the window for each batch.
+/// Start the live sources (agent socket, clipboard watch, session scan, and a replay when
+/// `MCMAP_REPLAY` names one). `MCMAP_LIVE=0` turns them all off.
 fn setup(s: &mut Map, wake: Waker) {
     s.markers.set_waker(wake.clone());
-    let Some(path) = std::env::var_os("MCMAP_REPLAY") else { return };
-    let source = match std::fs::read_to_string(&path).map_err(|e| e.to_string()).and_then(|t| ReplaySource::parse(&t)) {
-        Ok(mut r) => {
-            r.looped = true;
-            r
-        }
-        Err(e) => {
-            eprintln!("mcmap: replay {}: {e}", PathBuf::from(&path).display());
-            return;
-        }
-    };
-    let (rx, stopper) = mcmap_live::spawn(Box::new(source));
-    let (tx, out) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let _keep = stopper;
-        while let Ok(f) = rx.recv() {
-            if tx.send(f).is_err() {
-                return;
+    if std::env::var_os("MCMAP_LIVE").is_some_and(|v| v == "0") {
+        return;
+    }
+    s.seeds = SeedStore::load(SeedStore::default_path());
+    let replay = std::env::var_os("MCMAP_REPLAY").and_then(|path| {
+        match std::fs::read_to_string(&path).map_err(|e| e.to_string()).and_then(|t| ReplaySource::parse(&t)) {
+            Ok(mut r) => {
+                r.looped = true;
+                Some(r)
             }
-            wake();
+            Err(e) => {
+                eprintln!("mcmap: replay {}: {e}", PathBuf::from(&path).display());
+                None
+            }
         }
     });
-    s.fixes = Some(out);
-    s.follow = true;
+    let (tx, rx) = std::sync::mpsc::channel();
+    s.fixes = Some(rx);
+    s.live = Some(live::start(wake, tx, replay));
 }
 
 fn poll(s: &mut Map, _t: f64, tx: &mut Tx) -> bool {
     let fixes = s.take_fixes(tx);
+    let events = s.take_live_events(tx);
     let markers = s.take_marker_updates();
-    fixes || markers
+    fixes || events || markers
 }
 
 /// Headless scenes render tiles synchronously so a snapshot never shows a tile still in flight.
@@ -175,6 +177,23 @@ fn main() {
                 s.camera.center = [1600.0, 0.0];
                 s.camera.zoom = 0.2;
                 all_layers(s);
+            }),
+            // A player in the reference view, facing south-west, from the agent.
+            ("player", |s| {
+                sync(s);
+                s.player = Some(mcmap_live::Fix {
+                    world: Default::default(),
+                    dimension: Some(mcmap_data::Dimension::Overworld),
+                    dimension_key: "minecraft:overworld".into(),
+                    pos: [2839.5, 71.0, -1418.2],
+                    yaw: 45.0,
+                    pitch: 0.0,
+                    taken_at: std::time::SystemTime::now(),
+                    source: mcmap_live::SourceKind::Agent,
+                });
+                s.follow = true;
+                s.camera.center = [2839.5, -1418.2];
+                s.refresh_age();
             }),
             // The reference capture's view and size (1133 x 566 below the toolbar) with no
             // overlays, for the M2 gate: compare with art/seed-map/reference/biomes.png.

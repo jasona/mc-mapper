@@ -5,7 +5,7 @@
 //! mcmap-cli calibrate --seed S    compare the biome core with a reference capture
 
 mod biomes;
-mod game;
+use mcmap_live::session as game;
 
 use clap::{Parser, Subcommand};
 use mcmap_live::agent::{AgentSource, DEFAULT_PORT};

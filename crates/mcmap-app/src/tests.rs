@@ -235,3 +235,166 @@ fn nearest_search_finds_a_village_and_selects_it() {
     assert_eq!(map.camera.center, [sel.x as f64 + 0.5, sel.z as f64 + 0.5]);
     assert!(sel.tp().starts_with("/tp @s "));
 }
+
+fn centre(r: [f32; 4]) -> [f32; 2] {
+    [r[0] + r[2] / 2.0, r[1] + r[3] / 2.0]
+}
+
+#[test]
+fn the_heading_dot_points_where_the_player_looks() {
+    let mut rt = runtime(1.0);
+    let (tx, rx) = std::sync::mpsc::channel();
+    rt.state.fixes = Some(rx);
+    // Yaw 0 faces +z: down the screen.
+    tx.send(fix_at(2850.0, -1400.0)).unwrap();
+    poll_frames(&mut rt);
+    let (m, h) = (centre(rect(&rt, "player")), centre(rect(&rt, "heading")));
+    assert!((h[0] - m[0]).abs() < 0.5 && h[1] > m[1] + 8.0, "player {m:?} heading {h:?}");
+    // Yaw 90 faces -x: left.
+    let mut f = fix_at(2850.0, -1400.0);
+    f.yaw = 90.0;
+    tx.send(f).unwrap();
+    poll_frames(&mut rt);
+    let (m, h) = (centre(rect(&rt, "player")), centre(rect(&rt, "heading")));
+    assert!(h[0] < m[0] - 8.0 && (h[1] - m[1]).abs() < 0.5, "player {m:?} heading {h:?}");
+}
+
+#[test]
+fn an_old_fix_dims_the_marker() {
+    let mut rt = runtime(1.0);
+    let mut f = fix_at(2850.0, -1400.0);
+    f.taken_at = std::time::SystemTime::now() - std::time::Duration::from_secs(30);
+    rt.update_if(|s, tx| s.apply_fix(f.clone(), tx));
+    settle(&mut rt);
+    rt.update_if(|s, tx| s.take_live_events(tx));
+    settle(&mut rt);
+    assert!(rt.state.stale);
+    // A fresh fix wakes it.
+    rt.update_if(|s, tx| s.apply_fix(fix_at(2851.0, -1400.0), tx));
+    settle(&mut rt);
+    assert!(!rt.state.stale);
+}
+
+fn agent_fix(zoom: i64) -> mcmap_live::Fix {
+    let mut f = fix_at(100.0, 200.0);
+    f.source = mcmap_live::SourceKind::Agent;
+    f.world = mcmap_live::WorldHint { server: Some("Test Realm".into()), realm: true, zoom_seed: Some(zoom), seed: None };
+    f
+}
+
+#[test]
+fn a_typed_seed_is_remembered_only_when_it_matches_the_agents_world() {
+    use mcmap_data::seeds::{zoom_seed, SeedStore};
+    let dir = std::env::temp_dir().join(format!("mcmap-seeds-{}", std::process::id()));
+    let mut rt = runtime(1.0);
+    rt.state.seeds = SeedStore::load(dir.join("worlds.json"));
+    rt.update_if(|s, tx| s.apply_fix(agent_fix(zoom_seed(12345)), tx));
+    settle(&mut rt);
+    assert_eq!(rt.state.pending_zoom, Some(zoom_seed(12345)));
+    assert!(rt.state.status.contains("Test Realm"), "{}", rt.state.status);
+
+    // Another seed: shown, not kept.
+    rt.update(|s, _| {
+        s.seed_field = rune::TextEdit::new("999");
+        s.submit_seed();
+    });
+    assert!(rt.state.seeds.by_zoom(zoom_seed(999)).is_none());
+    // The right one: kept, under the Realm's name, and saved.
+    rt.update(|s, _| {
+        s.seed_field = rune::TextEdit::new("12345");
+        s.submit_seed();
+    });
+    let w = rt.state.seeds.by_zoom(zoom_seed(12345)).expect("remembered");
+    assert_eq!((w.seed, w.name.as_deref()), (12345, Some("Test Realm")));
+    assert_eq!(SeedStore::load(dir.join("worlds.json")).worlds.len(), 1);
+    assert_eq!(rt.state.pending_zoom, None);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn f3c_text_becomes_a_fix_but_never_overrides_a_fresh_agent_fix() {
+    let mut rt = runtime(1.0);
+    let line = "/execute in minecraft:overworld run tp @s 2839.50 71.00 -1418.23 -90.15 12.30";
+    rt.update_if(|s, tx| s.clipboard_text(line, tx));
+    settle(&mut rt);
+    let p = rt.state.player.clone().expect("fix");
+    assert_eq!((p.pos, p.source), ([2839.5, 71.0, -1418.23], mcmap_live::SourceKind::Clipboard));
+
+    rt.update_if(|s, tx| s.apply_fix(agent_fix(1), tx));
+    settle(&mut rt);
+    rt.update_if(|s, tx| s.clipboard_text(line, tx));
+    settle(&mut rt);
+    assert_eq!(rt.state.player.as_ref().unwrap().source, mcmap_live::SourceKind::Agent);
+}
+
+/// An agent fix from a world the store knows switches the map to its seed and dimension
+/// (needs `MCMAP_PACK`).
+#[test]
+#[ignore]
+fn a_known_world_loads_its_seed_and_follows_the_dimension() {
+    use mcmap_data::seeds::{zoom_seed, SeedStore};
+    let pack = std::sync::Arc::new(mcmap_data::pack::RawPack::read(std::path::Path::new(&std::env::var("MCMAP_PACK").unwrap())).unwrap());
+    let dir = std::env::temp_dir().join(format!("mcmap-known-{}", std::process::id()));
+    let mut rt = runtime(1.0);
+    rt.state.pack = Some(pack);
+    rt.state.seeds = SeedStore::load(dir.join("worlds.json"));
+    rt.state.seeds.remember(12345, Some("Test Realm".into()), None);
+    let mut f = agent_fix(zoom_seed(12345));
+    f.dimension = Some(mcmap_data::Dimension::Nether);
+    rt.update_if(|s, tx| s.apply_fix(f.clone(), tx));
+    settle(&mut rt);
+    assert_eq!(rt.state.tiles.world().map(|w| w.seed), Some(12345));
+    assert_eq!(rt.state.dimension, mcmap_data::Dimension::Nether);
+    assert_eq!(rt.state.camera.center, [100.0, 200.0]);
+    assert!(rt.state.follow);
+    rect(&rt, "player");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The live wiring against the stand-in game: the session scan finds it and its launcher world,
+/// attaches the agent with `jcmd`, and agent fixes arrive. Needs `MCMAP_FAKEGAME` (the compiled
+/// `java/agent/test/fakegame` classes) and `MCMAP_AGENT_JAR`; run it alone (`--test-threads 1`),
+/// since it binds the agent port.
+#[test]
+#[ignore]
+fn live_finds_the_game_attaches_and_receives_fixes() {
+    let classes = std::env::var("MCMAP_FAKEGAME").expect("MCMAP_FAKEGAME");
+    let dir = std::env::temp_dir().join(format!("mcmap-fake-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("launcher_quick_play.json"),
+        r#"{"version":2,"quickPlayData":{"acct":[{"epochLastPlayedTimeMs":5,"id":"realm-1","name":"Test Realm","javaInstance":{"game":{"type":"realms"}}}]}}"#,
+    )
+    .unwrap();
+    let mut game = std::process::Command::new("java")
+        .args(["-cp", &classes, "net.minecraft.client.main.Main", "--version", "26.3", "--gameDir", dir.to_str().unwrap()])
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let live = crate::live::start(std::sync::Arc::new(|| {}), tx, None);
+    let end = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let (mut session, mut notes, mut fix) = (None, Vec::new(), None);
+    while std::time::Instant::now() < end && (session.is_none() || fix.is_none()) {
+        while let Ok(e) = live.events.try_recv() {
+            match e {
+                crate::live::Event::Session(Some(s)) => session = Some(s),
+                crate::live::Event::Note(n) => notes.push(n),
+                _ => {}
+            }
+        }
+        if let Ok(f) = rx.try_recv() {
+            fix = Some(f);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let _ = game.kill();
+    let _ = std::fs::remove_dir_all(&dir);
+    println!("notes: {notes:?}");
+    let s = session.expect("session");
+    assert_eq!(s.quick_play.as_ref().map(|q| q.key()).as_deref(), Some("realms:realm-1"));
+    let f: mcmap_live::Fix = fix.unwrap_or_else(|| panic!("no fix; notes {notes:?}"));
+    println!("fix: {f:?}");
+    assert_eq!(f.source, mcmap_live::SourceKind::Agent);
+    assert_eq!(f.world.server.as_deref(), Some("Test Realm"));
+}

@@ -4,12 +4,15 @@ A local Minecraft Java seed map in Rust, drawn with [Rune](https://github.com/an
 later show your live position from the running game. The plan is in
 [`docs/implementation-plan.md`](docs/implementation-plan.md).
 
-Status: **M3** (structures). The window draws 26.3 surface biomes for any seed, with structure,
-stronghold, spawn and slime-chunk layers and a nearest-structure search. Biomes match the game bit for
-bit (10.8M cells, 12 seeds). Structure placement, stronghold rings and the spawn search point match the
-game exactly; whether a placement actually generates agrees with the game 99.6% of the time (8,871
-candidates, 7 seeds; mineshafts are the weakest at 97.5%). The live game position in the window
-(M5/M6) comes next; `mcmap-cli spike` already shows it in a terminal.
+Status: **M6** (live position in the window). The window draws 26.3 biomes for the Overworld, Nether
+and End, with structure, stronghold, spawn and slime-chunk layers and a nearest-structure search, and
+shows your live position from the running game.
+
+Accuracy against the game's own code: biomes match bit for bit in all three dimensions (10.8M
+Overworld cells over 12 seeds, 270k Nether and End cells). Structure placement, stronghold rings and
+the spawn search point match exactly; whether a placement generates agrees 99.6% of the time (8,871
+candidates, 7 seeds; mineshafts 97.5%). Nether fortresses, bastions and Nether ruined portals agree
+100%. End cities are approximate (84%), because the island height they need is estimated.
 
 ## Layout
 
@@ -66,7 +69,7 @@ cargo run -q -p xtask -- oracle structs <seed> <cx0> <cz0> <cx1> <cz1> out.ndjso
 cargo run -q -p xtask -- oracle templates out.json        # jigsaw and ruined-portal geometry (extract runs it)
 ```
 
-Packs extracted before M3 lack the template geometry: run `extract` again. The structure tests:
+Packs extracted before M4 lack the template geometry and the Nether biome table: run `extract` again. The structure tests:
 
 ```sh
 MCMAP_PACK=<pack> MCMAP_STRUCTS=<dir of structs dumps> cargo test -p mcmap-worldgen --release --test structures -- --ignored --nocapture
@@ -94,6 +97,28 @@ cargo run -p mcmap-cli --release -- snapcheck out.png     # the M2 gate: every c
 
 Map controls: drag to pan, mouse wheel zooms about the pointer, two-finger trackpad pans,
 Ctrl + wheel or pinch zooms.
+
+## Live position in the window
+
+`cargo run -q -p xtask -- agent` once, then `cargo run -p mcmap-app --release` with the game open (or
+started later). Every 3 seconds the window looks for a running client; when it finds one it attaches
+the read-only agent with `jcmd` and the marker appears, with a dot for where you're facing. The map
+follows you, switches dimension when you go through a portal, and dims the marker when the last fix is
+over 10 seconds old. The bar shows the source and its age.
+
+The client never receives the seed, only its SHA-256 (the zoom seed). The first time you join a world
+the map asks for the seed; type it once and it is kept in `~/.local/share/mcmap/worlds.json`, matched
+by that hash (a seed that doesn't hash to it is shown but not kept). After that the map switches to
+the right seed on its own, and at startup it uses the launcher's last-played world
+(`launcher_quick_play.json`) before the first fix.
+
+Without the agent (`MCMAP_AUTO_ATTACH=0`), press F3+C in the game: the map watches the clipboard where
+the compositor allows it, and otherwise reads it when its window regains focus, or on Ctrl+V over the
+map. A fresh agent fix always wins over a clipboard line. `MCMAP_LIVE=0` turns all live sources off.
+
+The agent keeps the token it was first loaded with until the game exits. The window keeps one token in
+`~/.local/share/mcmap/agent-token`, so a restarted window reconnects to the agent already loaded. A game
+that had the agent loaded by `mcmap-cli spike` (another token) must be restarted once.
 
 ## The live-position spike (run this with the game open)
 
