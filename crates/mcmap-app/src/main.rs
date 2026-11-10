@@ -4,7 +4,8 @@
 //! cargo run -p mcmap-app -- --snap out.png --scene home    render the reference view headless
 //!
 //! Art is read from `$MCMAP_ART`, else `art/seed-map` under the current directory. Without it the
-//! map still runs, with no markers.
+//! map still runs, with no markers. M1 draws no markers; `MCMAP_SPRITE_DEMO=1` shows the
+//! marker atlas as a test grid.
 //!
 //! The seed is `$MCMAP_SEED` (default: the reference capture's seed) and the version pack is
 //! `$MCMAP_PACK`, else the data directory's 26.3 pack. Without a pack the map shows the M0
@@ -51,12 +52,18 @@ fn art_dir() -> PathBuf {
 }
 
 fn init() -> Map {
-    let sprites = match sprites::Sprites::load(&art_dir()) {
-        Ok(s) => Some(s),
-        Err(e) => {
-            eprintln!("mcmap: no marker art ({e}); running without markers");
-            None
+    // Structure markers arrive with M2. Until then the marker atlas is only drawn as a test
+    // grid when asked for, so the map shows biomes alone.
+    let sprites = if std::env::var_os("MCMAP_SPRITE_DEMO").is_some() {
+        match sprites::Sprites::load(&art_dir()) {
+            Ok(s) => Some(s),
+            Err(e) => {
+                eprintln!("mcmap: no marker art ({e})");
+                None
+            }
         }
+    } else {
+        None
     };
     Map::new(sprites, world())
 }
