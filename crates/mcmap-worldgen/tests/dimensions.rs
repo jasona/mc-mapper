@@ -54,3 +54,22 @@ fn nether_and_end_match_the_game() {
     }
     assert_eq!(bad_total, 0);
 }
+
+/// The per-thread search hint of one surface must not reach another surface's smaller tree
+/// (switching from the Overworld to the Nether panicked with an index out of bounds).
+#[test]
+fn switching_dimensions_on_one_thread_keeps_hints_apart() {
+    use mcmap_worldgen::BiomeSampler;
+    let Ok(path) = std::env::var("MCMAP_PACK") else { return };
+    let pack = RawPack::read(std::path::Path::new(&path)).unwrap();
+    let over = Surface::for_dimension(&pack, 12345, Dimension::Overworld).unwrap();
+    let nether = Surface::for_dimension(&pack, 12345, Dimension::Nether).unwrap();
+    let mut alone = Vec::new();
+    for i in 0..200 {
+        alone.push(nether.biome_with_hint(i * 37, -i * 23, &mut None));
+    }
+    for i in 0..200 {
+        over.biome(i * 50, 0, i * 31);
+        assert_eq!(nether.biome(i * 37, 0, -i * 23), alone[i as usize]);
+    }
+}

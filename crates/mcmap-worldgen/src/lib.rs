@@ -34,21 +34,29 @@ pub struct Surface {
     pub tree: rtree::RTree,
     names: Vec<String>,
     pub dimension: mcmap_data::Dimension,
+    /// Tells this surface's search hint apart from another surface's on the same thread.
+    id: u64,
+}
+
+fn next_id() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
 /// `TheEndBiomeSource`'s biomes, in the order [`Surface::names`] lists them for the End.
 const END_BIOMES: [&str; 5] = ["minecraft:the_end", "minecraft:end_highlands", "minecraft:end_midlands", "minecraft:small_end_islands", "minecraft:end_barrens"];
 
 thread_local! {
-    /// The game keeps the last lookup result per thread and starts the next search from it.
-    static LAST: Cell<Option<u32>> = const { Cell::new(None) };
+    /// The game keeps the last lookup result per thread and starts the next search from it. The
+    /// hint belongs to one surface: another surface's index may not exist in this tree.
+    static LAST: Cell<(u64, Option<u32>)> = const { Cell::new((0, None)) };
 }
 
 impl Surface {
     pub fn new(pack: &mcmap_data::pack::RawPack, seed: i64) -> Result<Surface, String> {
         let params = pack.overworld_parameters.as_deref().ok_or("the pack has no Overworld parameter list; extract it again with the oracle")?;
         let (entries, names) = rtree::parse_parameters(params)?;
-        Ok(Surface { climate: climate::ClimateSampler::overworld(&pack.files, seed)?, tree: rtree::RTree::new(entries), names, dimension: mcmap_data::Dimension::Overworld })
+        Ok(Surface { climate: climate::ClimateSampler::overworld(&pack.files, seed)?, tree: rtree::RTree::new(entries), names, dimension: mcmap_data::Dimension::Overworld, id: next_id() })
     }
 
     /// Biomes of `dimension`. Nether needs a pack extracted with M4's oracle (its table is built
@@ -66,12 +74,12 @@ impl Surface {
                 let params = pack.overworld_parameters.as_deref().ok_or("the pack has no Overworld parameter list; extract it again with the oracle")?;
                 let (entries, names) = rtree::parse_parameters(params)?;
                 let climate = climate::ClimateSampler::from_settings(&pack.files, seed, preset.settings())?;
-                Ok(Surface { climate, tree: rtree::RTree::new(entries), names, dimension })
+                Ok(Surface { climate, tree: rtree::RTree::new(entries), names, dimension, id: next_id() })
             }
             Dimension::Nether => {
                 let params = pack.files.get(mcmap_data::pack::NETHER_PARAMETERS).ok_or("the pack has no Nether table; run `cargo run -q -p xtask -- extract --version 26.3` again")?;
                 let (entries, names) = rtree::parse_parameters(params)?;
-                Ok(Surface { climate: climate::ClimateSampler::from_settings(&pack.files, seed, "minecraft:nether")?, tree: rtree::RTree::new(entries), names, dimension })
+                Ok(Surface { climate: climate::ClimateSampler::from_settings(&pack.files, seed, "minecraft:nether")?, tree: rtree::RTree::new(entries), names, dimension, id: next_id() })
             }
             Dimension::End => {
                 // The tree is never searched in the End; it only keeps the type uniform.
@@ -79,7 +87,7 @@ impl Surface {
                     format!(r#"{{"biome":"{b}","temperature":[0,0],"humidity":[0,0],"continentalness":[0,0],"erosion":[0,0],"depth":[0,0],"weirdness":[0,0],"offset":0}}"#)
                 }).collect();
                 let (entries, names) = rtree::parse_parameters(&format!(r#"{{"entries":[{}]}}"#, fake.join(",")))?;
-                Ok(Surface { climate: climate::ClimateSampler::from_settings(&pack.files, seed, "minecraft:end")?, tree: rtree::RTree::new(entries), names, dimension })
+                Ok(Surface { climate: climate::ClimateSampler::from_settings(&pack.files, seed, "minecraft:end")?, tree: rtree::RTree::new(entries), names, dimension, id: next_id() })
             }
         }
     }
@@ -125,9 +133,10 @@ impl Surface {
 impl BiomeSampler for Surface {
     fn biome(&self, qx: i32, _qy: i32, qz: i32) -> BiomeId {
         LAST.with(|l| {
-            let mut h = l.get();
+            let (id, last) = l.get();
+            let mut h = if id == self.id { last } else { None };
             let b = self.biome_with_hint(qx, qz, &mut h);
-            l.set(h);
+            l.set((self.id, h));
             b
         })
     }

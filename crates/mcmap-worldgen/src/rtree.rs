@@ -198,7 +198,8 @@ impl RTree {
     /// result, as the game keeps it per thread; it is updated.
     pub fn search(&self, target: &[i64; 6], hint: &mut Option<u32>) -> u16 {
         let t = [target[0], target[1], target[2], target[3], target[4], target[5], 0];
-        let leaf = self.search_node(&self.root, &t, *hint);
+        let start = hint.filter(|&h| (h as usize) < self.entries.len());
+        let leaf = self.search_node(&self.root, &t, start);
         *hint = Some(leaf);
         self.entries[leaf as usize].biome
     }
