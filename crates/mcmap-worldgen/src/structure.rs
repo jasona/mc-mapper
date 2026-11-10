@@ -246,7 +246,7 @@ pub struct StructureSet {
 }
 
 /// What generating a candidate chunk gave.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Found {
     pub structure: String,
     pub chunk: (i32, i32),
@@ -676,25 +676,23 @@ impl Structures {
     /// `ChunkGeneratorStructureState.generateRingPositions`, with the biome search of
     /// `findBiomeHorizontal` at y 0 within 112 blocks.
     pub fn rings(&self, world: &World, set: &StructureSet) -> Vec<(i32, i32)> {
+        use rayon::prelude::*;
         let Placement::Rings { distance, spread, count, preferred, .. } = &set.placement else { return Vec::new() };
         let (distance, count) = (*distance, *count);
         let mut spread = *spread;
-        let mut out = Vec::with_capacity(count as usize);
         if count == 0 {
-            return out;
+            return Vec::new();
         }
         let mut r = Legacy::new(world.seed);
         let mut angle = r.next_double() * std::f64::consts::PI * 2.0;
         let (mut placed, mut ring) = (0, 0);
+        let mut tasks = Vec::with_capacity(count as usize);
         for n in 0..count {
             let dist = (4 * distance + distance * ring * 6) as f64 + (r.next_double() - 0.5) * (distance as f64 * 2.5);
             let kx = (angle.cos() * dist).round() as i32;
             let kz = (angle.sin() * dist).round() as i32;
-            let mut fork = r.fork();
-            out.push(match find_biome_horizontal(world, (kx << 4) + 8, 0, (kz << 4) + 8, 112, preferred, &mut fork) {
-                Some((bx, bz)) => (bx >> 4, bz >> 4),
-                None => (kx, kz),
-            });
+            let fork = r.fork();
+            tasks.push((kx, kz, fork));
             angle += std::f64::consts::PI * 2.0 / spread as f64;
             placed += 1;
             if placed == spread {
@@ -705,7 +703,13 @@ impl Structures {
                 angle += r.next_double() * std::f64::consts::PI * 2.0;
             }
         }
-        out
+        tasks
+            .into_par_iter()
+            .map(|(kx, kz, mut fork)| match find_biome_horizontal(world, (kx << 4) + 8, 0, (kz << 4) + 8, 112, preferred, &mut fork) {
+                Some((bx, bz)) => (bx >> 4, bz >> 4),
+                None => (kx, kz),
+            })
+            .collect()
     }
 }
 

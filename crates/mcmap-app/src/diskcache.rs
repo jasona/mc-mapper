@@ -80,25 +80,40 @@ impl TileCache {
     }
 
     pub fn put_shade(&self, key: TileKey, shade: &[u8]) {
-        self.write(key, "shade.zst", shade);
+        self.write_file(&self.path_of(key, "shade.zst"), shade);
+    }
+
+    /// World-level cached blob (e.g. spawn + stronghold rings).
+    pub fn get_blob(&self, name: &str) -> Option<Vec<u8>> {
+        self.read_file(&self.dir.join(format!("{name}.zst")), None)
+    }
+
+    pub fn put_blob(&self, name: &str, raw: &[u8]) {
+        self.write_file(&self.dir.join(format!("{name}.zst")), raw);
     }
 
     fn read(&self, key: TileKey, ext: &str, len: usize) -> Option<Vec<u8>> {
-        let p = self.path_of(key, ext);
-        let bytes = std::fs::read(&p).ok()?;
+        self.read_file(&self.path_of(key, ext), Some(len))
+    }
+
+    fn write(&self, key: TileKey, ext: &str, raw: &[u8]) {
+        self.write_file(&self.path_of(key, ext), raw);
+    }
+
+    fn read_file(&self, p: &Path, expected_len: Option<usize>) -> Option<Vec<u8>> {
+        let bytes = std::fs::read(p).ok()?;
         let raw = zstd::decode_all(bytes.strip_prefix(MAGIC)?).ok()?;
-        if raw.len() != len {
+        if expected_len.is_some_and(|len| raw.len() != len) {
             return None;
         }
         // Mark it used, for the size bound.
-        if let Ok(f) = std::fs::File::options().append(true).open(&p) {
+        if let Ok(f) = std::fs::File::options().append(true).open(p) {
             let _ = f.set_modified(SystemTime::now());
         }
         Some(raw)
     }
 
-    fn write(&self, key: TileKey, ext: &str, raw: &[u8]) {
-        let p = self.path_of(key, ext);
+    fn write_file(&self, p: &Path, raw: &[u8]) {
         let Some(dir) = p.parent() else { return };
         if std::fs::create_dir_all(dir).is_err() {
             return;
@@ -107,7 +122,7 @@ impl TileCache {
         let tmp = p.with_extension(format!("tmp{}", std::process::id()));
         let mut out = MAGIC.to_vec();
         out.extend_from_slice(&z);
-        if std::fs::write(&tmp, out).is_ok() && std::fs::rename(&tmp, &p).is_err() {
+        if std::fs::write(&tmp, out).is_ok() && std::fs::rename(&tmp, p).is_err() {
             let _ = std::fs::remove_file(&tmp);
         }
     }

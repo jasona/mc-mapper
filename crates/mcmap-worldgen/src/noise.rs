@@ -6,6 +6,10 @@
 
 use crate::random::Xoroshiro;
 use serde::Deserialize;
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, RwLock};
 
 const GRADIENT: [[i32; 3]; 16] = [
     [1, 1, 0], [-1, 1, 0], [1, -1, 0], [-1, -1, 0],
@@ -14,32 +18,39 @@ const GRADIENT: [[i32; 3]; 16] = [
     [1, 1, 0], [0, -1, 1], [-1, 1, 0], [0, -1, -1],
 ];
 
+const GRADIENT_F32: [[f32; 4]; 16] = [
+    [1.0, 1.0, 0.0, 0.0], [-1.0, 1.0, 0.0, 0.0], [1.0, -1.0, 0.0, 0.0], [-1.0, -1.0, 0.0, 0.0],
+    [1.0, 0.0, 1.0, 0.0], [-1.0, 0.0, 1.0, 0.0], [1.0, 0.0, -1.0, 0.0], [-1.0, 0.0, -1.0, 0.0],
+    [0.0, 1.0, 1.0, 0.0], [0.0, -1.0, 1.0, 0.0], [0.0, 1.0, -1.0, 0.0], [0.0, -1.0, -1.0, 0.0],
+    [1.0, 1.0, 0.0, 0.0], [0.0, -1.0, 1.0, 0.0], [-1.0, 1.0, 0.0, 0.0], [0.0, -1.0, -1.0, 0.0],
+];
+
 const ROUND_OFF: f64 = 33_554_432.0;
 const HALF_ROUND_OFF: f64 = 16_777_216.0;
 
 /// `GradientNoise.wrap`: keeps coordinates within ±2^24 so the fraction keeps its precision.
-#[inline]
+#[inline(always)]
 fn wrap(v: f64) -> f64 {
     if v >= -HALF_ROUND_OFF && v < HALF_ROUND_OFF { v } else { v - (v / ROUND_OFF + 0.5).floor() * ROUND_OFF }
 }
 
-#[inline]
-fn grad_dot(h: i32, x: f32, y: f32, z: f32) -> f32 {
-    let g = GRADIENT[(h & 15) as usize];
-    g[0] as f32 * x + g[1] as f32 * y + g[2] as f32 * z
+#[inline(always)]
+fn grad_dot(h: u8, x: f32, y: f32, z: f32) -> f32 {
+    let g = GRADIENT_F32[(h & 15) as usize];
+    g[0] * x + g[1] * y + g[2] * z
 }
 
-#[inline]
+#[inline(always)]
 fn smoothstep(t: f32) -> f32 {
     t * t * t * (t * (t * 6.0 - 15.0) + 10.0)
 }
 
-#[inline]
+#[inline(always)]
 fn lerp(d: f32, a: f32, b: f32) -> f32 {
     a + d * (b - a)
 }
 
-#[inline]
+#[inline(always)]
 #[allow(clippy::too_many_arguments)]
 fn lerp3(dx: f32, dy: f32, dz: f32, a: f32, b: f32, c: f32, d: f32, e: f32, f: f32, g: f32, h: f32) -> f32 {
     lerp(dz, lerp(dy, lerp(dx, a, b), lerp(dx, c, d)), lerp(dy, lerp(dx, e, f), lerp(dx, g, h)))
@@ -72,10 +83,13 @@ impl NoiseRand for crate::random::Legacy {
 /// One octave: the game's `PerlinNoise` (improved Perlin noise with a random offset).
 #[derive(Clone, Debug)]
 pub struct Perlin {
-    perms: [u8; 256],
+    perms: [u8; 512],
     ox: f64,
     oy: f64,
     oz: f64,
+    iy0: i32,
+    fy0: f32,
+    sy0: f32,
 }
 
 impl Perlin {
@@ -83,50 +97,64 @@ impl Perlin {
         let ox = r.next_double() * 256.0;
         let oy = r.next_double() * 256.0;
         let oz = r.next_double() * 256.0;
-        let mut perms = [0u8; 256];
-        for (i, p) in perms.iter_mut().enumerate() {
+        let mut p256 = [0u8; 256];
+        for (i, p) in p256.iter_mut().enumerate() {
             *p = i as u8;
         }
         for i in 0..256 {
             let j = r.next_int_bounded(256 - i as i32) as usize;
-            perms.swap(i, i + j);
+            p256.swap(i, i + j);
         }
-        Perlin { perms, ox, oy, oz }
+        let mut perms = [0u8; 512];
+        perms[..256].copy_from_slice(&p256);
+        perms[256..].copy_from_slice(&p256);
+        let y0 = wrap(0.0) + oy;
+        let iy0 = y0.floor() as i32;
+        let fy0 = (y0 - iy0 as f64) as f32;
+        let sy0 = smoothstep(fy0);
+        Perlin { perms, ox, oy, oz, iy0, fy0, sy0 }
     }
 
-    #[inline]
-    fn p(&self, i: i32) -> i32 {
-        self.perms[(i & 255) as usize] as i32
-    }
-
+    #[inline(always)]
     pub fn get(&self, x: f64, y: f64, z: f64) -> f32 {
         let x = wrap(x) + self.ox;
-        let y = wrap(y) + self.oy;
         let z = wrap(z) + self.oz;
-        let (ix, iy, iz) = (x.floor() as i32, y.floor() as i32, z.floor() as i32);
+        let (ix, iz) = (x.floor() as i32, z.floor() as i32);
         let fx = (x - ix as f64) as f32;
-        let fy = (y - iy as f64) as f32;
         let fz = (z - iz as f64) as f32;
-        self.sample_and_lerp(ix, iy, iz, fx, fy, fz, fy)
+        if y == 0.0 {
+            return self.sample_and_lerp_sy(ix, self.iy0, iz, fx, self.fy0, fz, self.sy0);
+        }
+        let y = wrap(y) + self.oy;
+        let iy = y.floor() as i32;
+        let fy = (y - iy as f64) as f32;
+        self.sample_and_lerp_sy(ix, iy, iz, fx, fy, fz, smoothstep(fy))
     }
 
+    #[inline(always)]
     #[allow(clippy::too_many_arguments)]
-    fn sample_and_lerp(&self, x: i32, y: i32, z: i32, fx: f32, fy: f32, fz: f32, sy: f32) -> f32 {
-        let i = self.p(x);
-        let j = self.p(x.wrapping_add(1));
-        let k = self.p(i.wrapping_add(y));
-        let l = self.p(i.wrapping_add(y).wrapping_add(1));
-        let m = self.p(j.wrapping_add(y));
-        let n = self.p(j.wrapping_add(y).wrapping_add(1));
-        let d0 = grad_dot(self.p(k.wrapping_add(z)), fx, fy, fz);
-        let d1 = grad_dot(self.p(m.wrapping_add(z)), fx - 1.0, fy, fz);
-        let d2 = grad_dot(self.p(l.wrapping_add(z)), fx, fy - 1.0, fz);
-        let d3 = grad_dot(self.p(n.wrapping_add(z)), fx - 1.0, fy - 1.0, fz);
-        let d4 = grad_dot(self.p(k.wrapping_add(z).wrapping_add(1)), fx, fy, fz - 1.0);
-        let d5 = grad_dot(self.p(m.wrapping_add(z).wrapping_add(1)), fx - 1.0, fy, fz - 1.0);
-        let d6 = grad_dot(self.p(l.wrapping_add(z).wrapping_add(1)), fx, fy - 1.0, fz - 1.0);
-        let d7 = grad_dot(self.p(n.wrapping_add(z).wrapping_add(1)), fx - 1.0, fy - 1.0, fz - 1.0);
-        lerp3(smoothstep(fx), smoothstep(sy), smoothstep(fz), d0, d1, d2, d3, d4, d5, d6, d7)
+    fn sample_and_lerp_sy(&self, x: i32, y: i32, z: i32, fx: f32, fy: f32, fz: f32, sy: f32) -> f32 {
+        let x0 = (x & 255) as usize;
+        let y0 = (y & 255) as usize;
+        let z0 = (z & 255) as usize;
+        let i = self.perms[x0] as usize + y0;
+        let j = self.perms[x0 + 1] as usize + y0;
+        let k = self.perms[i] as usize + z0;
+        let l = self.perms[i + 1] as usize + z0;
+        let m = self.perms[j] as usize + z0;
+        let n = self.perms[j + 1] as usize + z0;
+        let fx1 = fx - 1.0;
+        let fy1 = fy - 1.0;
+        let fz1 = fz - 1.0;
+        let d0 = grad_dot(self.perms[k], fx, fy, fz);
+        let d1 = grad_dot(self.perms[m], fx1, fy, fz);
+        let d2 = grad_dot(self.perms[l], fx, fy1, fz);
+        let d3 = grad_dot(self.perms[n], fx1, fy1, fz);
+        let d4 = grad_dot(self.perms[k + 1], fx, fy, fz1);
+        let d5 = grad_dot(self.perms[m + 1], fx1, fy, fz1);
+        let d6 = grad_dot(self.perms[l + 1], fx, fy1, fz1);
+        let d7 = grad_dot(self.perms[n + 1], fx1, fy1, fz1);
+        lerp3(smoothstep(fx), sy, smoothstep(fz), d0, d1, d2, d3, d4, d5, d6, d7)
     }
 }
 
@@ -206,7 +234,7 @@ struct Layer {
 /// An instantiated `NormalNoise`: two Perlin stacks interleaved as one layer list.
 #[derive(Clone, Debug)]
 pub struct NormalNoise {
-    layers: Vec<Layer>,
+    layers: Box<[Layer]>,
 }
 
 impl NormalNoise {
@@ -229,7 +257,7 @@ impl NormalNoise {
             layers.push(Layer { noise: pa, frequency: o.frequency, amplitude: amp });
             layers.push(Layer { noise: pb, frequency: o.frequency * 1.018_126_888_217_522_7, amplitude: amp });
         }
-        Ok(NormalNoise { layers })
+        Ok(NormalNoise { layers: layers.into_boxed_slice() })
     }
 
     /// `NormalNoise.createForLegacyNetherBiome`: two `LegacyFbmInitializer` stacks from one
@@ -288,10 +316,10 @@ impl NormalNoise {
         for l in b {
             layers.push(Layer { noise: l.noise, frequency: l.frequency * 1.018_126_888_217_522_7, amplitude: l.amplitude * f5 });
         }
-        Ok(NormalNoise { layers })
+        Ok(NormalNoise { layers: layers.into_boxed_slice() })
     }
 
-    #[inline]
+    #[inline(always)]
     pub fn get(&self, x: f64, y: f64, z: f64) -> f32 {
         let mut s = 0f32;
         for l in &self.layers {
@@ -387,4 +415,136 @@ pub fn end_island_height(n: &Simplex, x: i32, z: i32) -> f32 {
         }
     }
     h
+}
+
+type EndTlsSlot = (u64, i32, i32, Option<Arc<[u64; 64]>>);
+
+thread_local! {
+    static END_TLS: RefCell<(usize, [EndTlsSlot; 4])> = const {
+        RefCell::new((0, [(0, 0, 0, None), (0, 0, 0, None), (0, 0, 0, None), (0, 0, 0, None)]))
+    };
+}
+
+/// Cached End island height sampler: memoizes `a*a + b*b > 4096 && simplex(a, b) < -0.9` in
+/// 64x64 lattice blocks (`[u64; 64]`), turning the 625-point Simplex scan into bitmask scans.
+pub struct EndIslands {
+    simplex: Simplex,
+    id: u64,
+    blocks: RwLock<HashMap<(i32, i32), Arc<[u64; 64]>>>,
+}
+
+impl std::fmt::Debug for EndIslands {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EndIslands").field("id", &self.id).finish()
+    }
+}
+
+impl EndIslands {
+    pub fn new(simplex: Simplex) -> EndIslands {
+        static NEXT_END_ID: AtomicU64 = AtomicU64::new(1);
+        EndIslands {
+            simplex,
+            id: NEXT_END_ID.fetch_add(1, Ordering::Relaxed),
+            blocks: RwLock::new(HashMap::new()),
+        }
+    }
+
+    fn compute_block(&self, bx: i32, bz: i32) -> Arc<[u64; 64]> {
+        let a0 = (bx as i64) * 64;
+        let b0 = (bz as i64) * 64;
+        let mut bits = [0u64; 64];
+        for (ra, row) in bits.iter_mut().enumerate() {
+            let a = a0 + ra as i64;
+            let mut word = 0u64;
+            for rb in 0..64 {
+                let b = b0 + rb as i64;
+                if a * a + b * b > 4096 && self.simplex.get(a as f64, b as f64) < -0.9 {
+                    word |= 1u64 << rb;
+                }
+            }
+            *row = word;
+        }
+        Arc::new(bits)
+    }
+
+    #[inline]
+    fn block(&self, bx: i32, bz: i32) -> Arc<[u64; 64]> {
+        if let Some(hit) = END_TLS.with(|tls| {
+            let cache = tls.borrow();
+            for slot in &cache.1 {
+                if slot.0 == self.id && slot.1 == bx && slot.2 == bz {
+                    return slot.3.clone();
+                }
+            }
+            None
+        }) {
+            return hit;
+        }
+        let arc = if let Some(b) = self.blocks.read().unwrap().get(&(bx, bz)).cloned() {
+            b
+        } else {
+            let built = self.compute_block(bx, bz);
+            let mut map = self.blocks.write().unwrap();
+            if map.len() > 8192 {
+                map.clear();
+            }
+            map.entry((bx, bz)).or_insert_with(|| built.clone()).clone()
+        };
+        END_TLS.with(|tls| {
+            let mut cache = tls.borrow_mut();
+            let idx = cache.0;
+            cache.1[idx] = (self.id, bx, bz, Some(arc.clone()));
+            cache.0 = (idx + 1) & 3;
+        });
+        arc
+    }
+
+    pub fn height(&self, x: i32, z: i32) -> f32 {
+        let (i, j) = (x / 2, z / 2);
+        let (k, l) = (x % 2, z % 2);
+        let a_start = (i - 12) as i64;
+        let a_end = (i + 12) as i64;
+        let b_start = (j - 12) as i64;
+        let bx0 = a_start.div_euclid(64) as i32;
+        let bx1 = a_end.div_euclid(64) as i32;
+        let bz0 = b_start.div_euclid(64) as i32;
+        let bit0 = b_start.rem_euclid(64) as u32;
+        const MASK25: u64 = (1u64 << 25) - 1;
+
+        let b00 = self.block(bx0, bz0);
+        let b01 = if bit0 > 39 { Some(self.block(bx0, bz0 + 1)) } else { None };
+        let b10 = if bx1 != bx0 { Some(self.block(bx1, bz0)) } else { None };
+        let b11 = if bx1 != bx0 && bit0 > 39 { Some(self.block(bx1, bz0 + 1)) } else { None };
+
+        let mut h = -100.0f32;
+        for m in -12..=12 {
+            let a = (i + m) as i64;
+            let ra = a.rem_euclid(64) as usize;
+            let second_x = (a.div_euclid(64) as i32) != bx0;
+            let w0 = if second_x { b10.as_ref().unwrap()[ra] } else { b00[ra] };
+            let mut mask = if bit0 <= 39 {
+                (w0 >> bit0) & MASK25
+            } else {
+                let w1 = if second_x { b11.as_ref().unwrap()[ra] } else { b01.as_ref().unwrap()[ra] };
+                ((w0 >> bit0) | (w1 << (64 - bit0))) & MASK25
+            };
+            if mask == 0 {
+                continue;
+            }
+            let fa = (a as f32).abs() * 3439.0;
+            let g = (k - m * 2) as f32;
+            let gg = g * g;
+            while mask != 0 {
+                let p = mask.trailing_zeros();
+                mask &= mask - 1;
+                let o = p as i32 - 12;
+                let b = (j + o) as i64;
+                let f = (fa + (b as f32).abs() * 147.0) % 13.0 + 9.0;
+                let q = (l - o * 2) as f32;
+                let v = (100.0 - (gg + q * q).sqrt() * f).clamp(-100.0, 80.0);
+                h = h.max(v);
+            }
+        }
+        h
+    }
 }

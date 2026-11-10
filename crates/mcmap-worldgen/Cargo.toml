@@ -8,6 +8,7 @@ publish.workspace = true
 
 [dependencies]
 mcmap-data.workspace = true
+rayon.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 md-5 = "0.10"

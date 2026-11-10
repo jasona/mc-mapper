@@ -1805,6 +1805,7 @@ dependencies = [
  "image",
  "mcmap-data",
  "md-5",
+ "rayon",
  "serde",
  "serde_json",
 ]

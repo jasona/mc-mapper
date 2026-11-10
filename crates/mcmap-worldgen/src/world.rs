@@ -1,11 +1,15 @@
 //! One Overworld seed: surface biomes, the terrain shape functions, and biomes at any height.
 
-use crate::climate::quantize;
-use crate::terrain::Terrain;
-use crate::{BiomeId, Surface};
+use crate::climate::{quantize, ClimateIds, ClimateSampler};
+use crate::density::{Arena, Builder, Df, Files, Memo, NodeId};
+use crate::random::world_positional;
+use crate::terrain::{Terrain, TerrainIds};
+use crate::{tree_for_dimension, BiomeId, Surface};
 use mcmap_data::pack::RawPack;
 use mcmap_data::{Dimension, Preset};
+use std::sync::Arc;
 
+#[derive(Clone)]
 pub struct World {
     pub seed: i64,
     pub surface: Surface,
@@ -31,16 +35,56 @@ impl World {
     }
 
     pub fn for_world(pack: &RawPack, seed: i64, dimension: Dimension, preset: Preset) -> Result<World, String> {
-        let terrain = if dimension == Dimension::Overworld { Some(Terrain::new(&pack.files, seed, preset)?) } else { None };
-        Ok(World { seed, surface: Surface::for_world(pack, seed, dimension, preset)?, terrain, dimension })
+        let (world, _) = World::for_world_with_spawn(pack, seed, dimension, preset, false)?;
+        Ok(world)
+    }
+
+    /// Build [`World`] and (when `with_spawn` is true in the Overworld) [`SpawnFinder`] in a
+    /// single shared density-function [`Arena`] so noise instances and subgraphs are instantiated once.
+    pub fn for_world_with_spawn(
+        pack: &RawPack,
+        seed: i64,
+        dimension: Dimension,
+        preset: Preset,
+        with_spawn: bool,
+    ) -> Result<(World, Option<SpawnFinder>), String> {
+        let (tree, names) = tree_for_dimension(pack, dimension)?;
+        if dimension == Dimension::Overworld {
+            let mut b = Builder::new(&pack.files, world_positional(seed));
+            b.seed = seed;
+            let c_ids = ClimateIds::prepare(&mut b, preset.settings())?;
+            let t_ids = TerrainIds::prepare(&mut b, preset)?;
+            let s_ids = if with_spawn { Some(SpawnIds::prepare(&mut b, preset)?) } else { None };
+            let arena = b.finish();
+            let surface = Surface::from_parts(c_ids.into_sampler(arena.clone()), tree, names, dimension);
+            let terrain = Some(t_ids.into_terrain(arena.clone()));
+            let spawn = s_ids.map(|s| s.into_finder(arena));
+            Ok((World { seed, surface, terrain, dimension }, spawn))
+        } else {
+            let settings = match dimension {
+                Dimension::Overworld => unreachable!(),
+                Dimension::Nether => "minecraft:nether",
+                Dimension::End => "minecraft:end",
+            };
+            let climate = ClimateSampler::from_settings(&pack.files, seed, settings)?;
+            let surface = Surface::from_parts(climate, tree, names, dimension);
+            Ok((World { seed, surface, terrain: None, dimension }, None))
+        }
     }
 
     /// Biome at quart coordinates, at that height (`MultiNoiseBiomeSource.getNoiseBiome`).
+    #[inline]
     pub fn biome(&self, qx: i32, qy: i32, qz: i32, hint: &mut Option<u32>) -> BiomeId {
         let Some(terrain) = &self.terrain else { return self.surface.biome_with_hint(qx, qz, hint) };
         let (x, y, z) = (qx << 2, qy << 2, qz << 2);
-        let v = self.surface.climate.raw(x, y, z);
-        let d = terrain.depth(x, y, z);
+        let (v, d) = if self.surface.climate.shares_arena_with(terrain.depth_df()) {
+            let mut memo = Memo::new(y);
+            let v = self.surface.climate.raw_memo(x, y, z, &mut memo);
+            let d = terrain.depth_memo(x, y, z, &mut memo);
+            (v, d)
+        } else {
+            (self.surface.climate.raw(x, y, z), terrain.depth(x, y, z))
+        };
         let t = [quantize(v[0]), quantize(v[1]), quantize(v[2]), quantize(v[3]), quantize(d), quantize(v[4])];
         BiomeId(self.surface.tree.search(&t, hint))
     }
@@ -68,42 +112,65 @@ impl World {
     }
 }
 
-/// `NoiseSpawnFinder`: the world spawn's search point, from the noise settings' spawn targets.
-/// The server then picks a grass block in that chunk area, which this does not model.
-pub struct SpawnFinder {
-    /// Per target point: (function, quantized min, quantized max) for each listed parameter.
-    targets: Vec<Vec<(crate::density::Df, i64, i64)>>,
+struct SpawnIds {
+    targets: Vec<Vec<(NodeId, i64, i64)>>,
 }
 
-impl SpawnFinder {
-    pub fn overworld(files: &crate::density::Files, seed: i64) -> Result<SpawnFinder, String> {
-        SpawnFinder::new(files, seed, Preset::Normal)
-    }
-
-    pub fn new(files: &crate::density::Files, seed: i64, preset: Preset) -> Result<SpawnFinder, String> {
-        let mut b = crate::density::Builder::new(files, crate::random::world_positional(seed));
+impl SpawnIds {
+    fn prepare(b: &mut Builder, preset: Preset) -> Result<SpawnIds, String> {
         let settings = b.json("noise_settings", preset.settings())?;
         let mut targets = Vec::new();
         for t in settings["spawn_target"].as_array().ok_or("noise settings without spawn_target")? {
             let mut params = Vec::new();
             for (id, range) in t.as_object().ok_or("spawn target is not an object")? {
-                let f = b.build(&serde_json::Value::String(id.clone()))?;
+                let f = b.build_id(&serde_json::Value::String(id.clone()))?;
                 let lo = range[0].as_f64().ok_or("spawn target range")? as f32;
                 let hi = range[1].as_f64().ok_or("spawn target range")? as f32;
                 params.push((f, quantize(lo), quantize(hi)));
             }
             targets.push(params);
         }
-        Ok(SpawnFinder { targets })
+        Ok(SpawnIds { targets })
+    }
+
+    fn into_finder(self, arena: Arc<Arena>) -> SpawnFinder {
+        let targets = self
+            .targets
+            .into_iter()
+            .map(|t| t.into_iter().map(|(id, lo, hi)| (Df::from_parts(arena.clone(), id), lo, hi)).collect())
+            .collect();
+        SpawnFinder { targets }
+    }
+}
+
+/// `NoiseSpawnFinder`: the world spawn's search point, from the noise settings' spawn targets.
+/// The server then picks a grass block in that chunk area, which this does not model.
+#[derive(Clone)]
+pub struct SpawnFinder {
+    /// Per target point: (function, quantized min, quantized max) for each listed parameter.
+    targets: Vec<Vec<(Df, i64, i64)>>,
+}
+
+impl SpawnFinder {
+    pub fn overworld(files: &Files, seed: i64) -> Result<SpawnFinder, String> {
+        SpawnFinder::new(files, seed, Preset::Normal)
+    }
+
+    pub fn new(files: &Files, seed: i64, preset: Preset) -> Result<SpawnFinder, String> {
+        let mut b = Builder::new(files, world_positional(seed));
+        b.seed = seed;
+        let ids = SpawnIds::prepare(&mut b, preset)?;
+        Ok(ids.into_finder(b.finish()))
     }
 
     fn fitness(&self, x: i32, z: i32) -> i64 {
         let (sx, sz) = ((x >> 2) << 2, (z >> 2) << 2);
+        let mut memo = Memo::new(0);
         let mut best = i64::MAX;
         for t in &self.targets {
             let mut sum = 0i64;
             for (f, lo, hi) in t {
-                let v = quantize(f.eval(sx, 0, sz));
+                let v = quantize(f.eval_memo(sx, 0, sz, &mut memo));
                 let d = if v - hi > 0 { v - hi } else { (lo - v).max(0) };
                 sum = sum.wrapping_add(d.wrapping_mul(d));
             }

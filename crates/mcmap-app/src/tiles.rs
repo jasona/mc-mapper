@@ -5,7 +5,8 @@
 //! Each view run asks for the visible tiles with a priority (distance from the view centre, in
 //! tiles). Workers take the nearest queued tile first, and a queued tile the next view run no
 //! longer asks for is dropped before anyone renders it, so a fast pan or zoom never leaves a
-//! backlog of tiles nobody will see. Finished tiles stay in a bounded memory cache.
+//! backlog of tiles nobody will see. Finished tiles stay in a bounded memory cache alongside
+//! their compact biome IDs and optional hillshade so toggling Relief repaints in memory.
 //!
 //! Tiles are surface biomes when a world is loaded, else the M0 checkerboard.
 
@@ -22,6 +23,12 @@ use std::sync::{Arc, Condvar, Mutex};
 /// Most tiles kept: 512 tiles of 256 KiB each is 128 MiB of RGBA at most.
 const CAPACITY: usize = 512;
 
+#[derive(Default)]
+struct MemTile {
+    ids: Option<Arc<[u16]>>,
+    shade: Option<Arc<[u8]>>,
+}
+
 /// A seed's surface biomes and their colours.
 pub struct World {
     pub seed: i64,
@@ -31,12 +38,20 @@ pub struct World {
     pub cache: Option<TileCache>,
     /// The Overworld's terrain, for the hillshade.
     pub terrain: Option<Terrain>,
+    mem: Mutex<HashMap<TileKey, MemTile>>,
 }
 
 impl World {
     pub fn new(seed: i64, surface: Surface) -> World {
         let colors = biomes::palette(&surface);
-        World { seed, surface, colors, cache: None, terrain: None }
+        World {
+            seed,
+            surface,
+            colors,
+            cache: None,
+            terrain: None,
+            mem: Mutex::new(HashMap::new()),
+        }
     }
 
     pub fn with_terrain(mut self, terrain: Option<Terrain>) -> World {
@@ -48,33 +63,61 @@ impl World {
         self.cache = cache;
         self
     }
-}
 
-fn render(world: Option<&World>, key: TileKey, relief: bool) -> Vec<u8> {
-    let Some(w) = world else { return checker::render(key) };
-    let n = (mcmap_tiles::TILE * mcmap_tiles::TILE) as usize;
-    let ids = match w.cache.as_ref().and_then(|c| c.get(key, n)) {
-        Some(ids) => ids,
-        None => {
-            let ids = biomes::ids(&w.surface, key);
-            if let Some(c) = &w.cache {
-                c.put(key, &ids);
-            }
-            ids
+    fn ids_for(&self, key: TileKey, n: usize) -> Arc<[u16]> {
+        if let Some(ids) = self.mem.lock().unwrap().get(&key).and_then(|t| t.ids.clone()) {
+            return ids;
         }
-    };
-    let mut px = biomes::paint(&ids, &w.colors);
-    if relief && let Some(t) = &w.terrain {
-        let shade = match w.cache.as_ref().and_then(|c| c.get_shade(key, n)) {
+        let vec = match self.cache.as_ref().and_then(|c| c.get(key, n)) {
+            Some(ids) => ids,
+            None => {
+                let ids = biomes::ids(&self.surface, key);
+                if let Some(c) = &self.cache {
+                    c.put(key, &ids);
+                }
+                ids
+            }
+        };
+        let arc: Arc<[u16]> = Arc::from(vec);
+        let mut mem = self.mem.lock().unwrap();
+        if mem.len() > CAPACITY * 2 && !mem.contains_key(&key) {
+            mem.clear();
+        }
+        mem.entry(key).or_default().ids = Some(arc.clone());
+        arc
+    }
+
+    fn shade_for(&self, terrain: &Terrain, key: TileKey, n: usize) -> Arc<[u8]> {
+        if let Some(s) = self.mem.lock().unwrap().get(&key).and_then(|t| t.shade.clone()) {
+            return s;
+        }
+        let vec = match self.cache.as_ref().and_then(|c| c.get_shade(key, n)) {
             Some(s) => s,
             None => {
-                let s = mcmap_tiles::relief::shade(t, key);
-                if let Some(c) = &w.cache {
+                let s = mcmap_tiles::relief::shade(terrain, key);
+                if let Some(c) = &self.cache {
                     c.put_shade(key, &s);
                 }
                 s
             }
         };
+        let arc: Arc<[u8]> = Arc::from(vec);
+        let mut mem = self.mem.lock().unwrap();
+        if mem.len() > CAPACITY * 2 && !mem.contains_key(&key) {
+            mem.clear();
+        }
+        mem.entry(key).or_default().shade = Some(arc.clone());
+        arc
+    }
+}
+
+fn render(world: Option<&World>, key: TileKey, relief: bool) -> Vec<u8> {
+    let Some(w) = world else { return checker::render(key) };
+    let n = (mcmap_tiles::TILE * mcmap_tiles::TILE) as usize;
+    let ids = w.ids_for(key, n);
+    let mut px = biomes::paint(&ids, &w.colors);
+    if relief && let Some(t) = &w.terrain {
+        let shade = w.shade_for(t, key, n);
         mcmap_tiles::relief::apply(&mut px, &shade);
     }
     px
@@ -166,11 +209,32 @@ impl TileStore {
         self.relief.get()
     }
 
-    /// Turn the hillshade on or off: every tile is drawn again.
+    /// Turn the hillshade on or off: repaint any tile whose layers are already in memory, and
+    /// re-render only tiles whose hillshade has not been computed yet.
     pub fn set_relief(&self, on: bool) {
         if self.relief.replace(on) != on {
-            self.tiles.borrow_mut().clear();
             self.shared.queue.lock().unwrap().jobs.clear();
+            let world = self.world();
+            let mut tiles = self.tiles.borrow_mut();
+            let Some(w) = world.as_deref() else {
+                tiles.clear();
+                return;
+            };
+            let mem = w.mem.lock().unwrap();
+            tiles.retain(|key, entry| {
+                let Some(mt) = mem.get(key) else { return false };
+                let Some(ids) = &mt.ids else { return false };
+                if on && w.terrain.is_some() {
+                    let Some(shade) = &mt.shade else { return false };
+                    let mut px = biomes::paint(ids, &w.colors);
+                    mcmap_tiles::relief::apply(&mut px, shade);
+                    entry.px.set(mcmap_tiles::TILE, mcmap_tiles::TILE, px);
+                    true
+                } else {
+                    entry.px.set(mcmap_tiles::TILE, mcmap_tiles::TILE, biomes::paint(ids, &w.colors));
+                    true
+                }
+            });
         }
     }
 
@@ -190,6 +254,34 @@ impl TileStore {
 
     pub fn begin_frame(&self) {
         self.frame.set(self.frame.get() + 1);
+    }
+
+    /// In synchronous mode (snapshots/tests), render all missing visible tiles in parallel first.
+    pub fn prefetch_sync(&self, keys: &[TileKey]) {
+        if !self.sync.get() {
+            return;
+        }
+        let world = self.world();
+        let relief = self.relief.get();
+        let missing: Vec<TileKey> = {
+            let tiles = self.tiles.borrow();
+            keys.iter().copied().filter(|k| !tiles.contains_key(k)).collect()
+        };
+        if missing.len() <= 1 {
+            return;
+        }
+        use rayon::prelude::*;
+        let rendered: Vec<(TileKey, Vec<u8>)> = missing
+            .into_par_iter()
+            .map(|k| (k, render(world.as_deref(), k, relief)))
+            .collect();
+        let now = self.frame.get();
+        let mut tiles = self.tiles.borrow_mut();
+        for (k, data) in rendered {
+            let px = Pixels::new();
+            px.set(mcmap_tiles::TILE, mcmap_tiles::TILE, data);
+            tiles.insert(k, Entry { px, used: now });
+        }
     }
 
     /// The tile's pixels; queues the render the first time it's asked for, and refreshes its

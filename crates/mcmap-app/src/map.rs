@@ -380,15 +380,22 @@ impl Map {
             self.status = "No version pack: run `cargo run -q -p xtask -- extract --version 26.3`".into();
             return;
         };
-        match mcmap_worldgen::Surface::for_world(&pack, seed, dimension, self.preset) {
-            Ok(s) => {
+        match mcmap_worldgen::world::World::for_world_with_spawn(
+            &pack,
+            seed,
+            dimension,
+            self.preset,
+            dimension == Dimension::Overworld,
+        ) {
+            Ok((wg, spawn)) => {
                 self.dimension = dimension;
                 self.loaded = Some((seed, dimension, self.preset));
-                let cache = crate::diskcache::TileCache::for_world(&pack.version, s.names(), seed, dimension, self.preset);
-                let terrain = if dimension == Dimension::Overworld { mcmap_worldgen::terrain::Terrain::new(&pack.files, seed, self.preset).ok() } else { None };
-                self.tiles.set_world(Some(Arc::new(World::new(seed, s).with_cache(cache).with_terrain(terrain))));
+                let cache = crate::diskcache::TileCache::for_world(&pack.version, wg.surface.names(), seed, dimension, self.preset);
+                self.tiles.set_world(Some(Arc::new(
+                    World::new(seed, wg.surface.clone()).with_cache(cache.clone()).with_terrain(wg.terrain.clone()),
+                )));
                 self.selected = None;
-                match Engine::with_preset(&pack, seed, dimension, self.preset) {
+                match Engine::from_world(&pack, wg, spawn, cache) {
                     Ok(e) => self.markers.set_engine(Some(Arc::new(e))),
                     Err(e) => {
                         self.markers.set_engine(None);
@@ -654,6 +661,7 @@ pub fn view(s: &Map, cx: &mut Cx<Map>) -> El {
     let mut world = el().key("world").size(size[0] as f32, size[1] as f32).live_offset(&s.pan).live_scale(&s.k);
     if size[0] > 0.0 && show_biomes {
         s.tiles.begin_frame();
+        s.tiles.prefetch_sync(&l.tiles);
         let centre_tile = tile_blocks(l.level);
         for &t in &l.tiles {
             let p = Map::point(&l, t.origin());
@@ -933,19 +941,22 @@ fn overlay(s: &Map, f: &Features, l: &Layout, mut world: El, scale: f64) -> El {
     if any && zoom >= STRUCTURE_ZOOM {
         let r = (REGION * 16) as f64;
         let (rx0, rz0, rx1, rz1) = ((x0 / r).floor() as i32, (z0 / r).floor() as i32, ((x1 / r).ceil() as i32) - 1, ((z1 / r).ceil() as i32) - 1);
-        let mut asked = Vec::new();
+        let mut asked = Vec::with_capacity(((rx1 - rx0 + 1).max(0) * (rz1 - rz0 + 1).max(0)) as usize);
+        for rz in rz0..=rz1 {
+            for rx in rx0..=rx1 {
+                asked.push((rx, rz));
+            }
+        }
         let mut found: Vec<Found> = Vec::new();
         let c = s.camera.center;
         let store = &s.markers;
         store.begin_frame();
-        for rz in rz0..=rz1 {
-            for rx in rx0..=rx1 {
-                let mid = [(rx as f64 + 0.5) * r, (rz as f64 + 0.5) * r];
-                let pr = (mid[0] - c[0]).hypot(mid[1] - c[1]) / r;
-                asked.push((rx, rz));
-                if let Some(v) = store.request((rx, rz), pr) {
-                    found.extend(v.iter().cloned());
-                }
+        store.prefetch_sync(&asked);
+        for &(rx, rz) in &asked {
+            let mid = [(rx as f64 + 0.5) * r, (rz as f64 + 0.5) * r];
+            let pr = (mid[0] - c[0]).hypot(mid[1] - c[1]) / r;
+            if let Some(v) = store.request((rx, rz), pr) {
+                found.extend(v.iter().cloned());
             }
         }
         store.end_frame(&asked);

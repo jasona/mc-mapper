@@ -3,22 +3,24 @@
 //! Structures are computed per region of 64 x 64 chunks on two worker threads, all structure sets
 //! at once, so turning a layer on or off never waits for work. The view asks for the regions it
 //! lays out, nearest first; a queued region the next view run doesn't ask for is dropped, as with
-//! tiles. Spawn and stronghold rings are computed once per seed on their own thread (the rings
-//! take about 2.5 s: 128 biome searches). Finished work sets `dirty` and wakes the window, and
-//! `poll` re-runs the view.
+//! tiles. Spawn and stronghold rings are computed once per seed on their own thread (parallelised
+//! across cores and cached on disk). Finished work sets `dirty` and wakes the window, and `poll`
+//! re-runs the view.
 //!
 //! Which picker label shows which structures, and with which sprite of the marker atlas, is the
 //! table in [`KINDS`].
 
+use crate::diskcache::TileCache;
 use mcmap_data::pack::RawPack;
 use mcmap_data::Dimension;
 use mcmap_worldgen::decoration::Decorations;
 use mcmap_worldgen::structure::{Found, Placement, Structures};
 use mcmap_worldgen::world::{SpawnFinder, World};
 use rune::Waker;
+use serde::{Deserialize, Serialize};
 use std::cell::Cell;
 use std::collections::HashMap;
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, LazyLock, Mutex};
 
 /// Chunks per region side.
 pub const REGION: i32 = 64;
@@ -126,14 +128,47 @@ pub fn display_name(structure: &str) -> String {
     }
 }
 
+type PackRulesKey = (String, usize, [u8; 8], Dimension);
+type PackRulesVal = (Arc<Structures>, Option<Arc<Decorations>>);
+
+static RULES_CACHE: LazyLock<Mutex<HashMap<PackRulesKey, PackRulesVal>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn cached_rules(pack: &RawPack, dimension: Dimension, names: &[String]) -> Result<PackRulesVal, String> {
+    let sig_full = mcmap_data::seeds::sha256(names.join(",").as_bytes());
+    let mut sig = [0u8; 8];
+    sig.copy_from_slice(&sig_full[..8]);
+    let key = (pack.version.clone(), pack.files.len(), sig, dimension);
+    if let Some(hit) = RULES_CACHE.lock().unwrap().get(&key).cloned() {
+        return Ok(hit);
+    }
+    let structures = Arc::new(Structures::new(&pack.files, names)?);
+    let decorations = Decorations::new(&pack.files, dimension, names, DECORATIONS)
+        .map_err(|e| eprintln!("mcmap: decoration features: {e}"))
+        .ok()
+        .filter(|d| !d.features.is_empty())
+        .map(Arc::new);
+    let val = (structures, decorations);
+    let mut map = RULES_CACHE.lock().unwrap();
+    Ok(map.entry(key).or_insert_with(|| val.clone()).clone())
+}
+
+#[derive(Serialize, Deserialize)]
+struct CachedWorldMeta {
+    spawn: Option<(i32, i32)>,
+    strongholds: Vec<Found>,
+}
+
+const META_BLOB: &str = "rings_spawn_v1";
+
 /// One seed's structure engine.
 pub struct Engine {
     pub world: World,
-    pub structures: Structures,
+    pub structures: Arc<Structures>,
     /// The Overworld's spawn search; none in the Nether and the End.
     pub spawn: Option<SpawnFinder>,
     /// Decoration features with a layer, if the pack has the feature order.
-    pub decorations: Option<Decorations>,
+    pub decorations: Option<Arc<Decorations>>,
+    pub cache: Option<TileCache>,
     zoom: i64,
 }
 
@@ -146,14 +181,20 @@ impl Engine {
     }
 
     pub fn with_preset(pack: &RawPack, seed: i64, dimension: Dimension, preset: mcmap_data::Preset) -> Result<Engine, String> {
-        let world = World::for_world(pack, seed, dimension, preset)?;
-        let structures = Structures::new(&pack.files, world.surface.names())?;
-        let spawn = if dimension == Dimension::Overworld { Some(SpawnFinder::new(&pack.files, seed, preset)?) } else { None };
-        let decorations = Decorations::new(&pack.files, dimension, world.surface.names(), DECORATIONS)
-            .map_err(|e| eprintln!("mcmap: decoration features: {e}"))
-            .ok()
-            .filter(|d| !d.features.is_empty());
-        Ok(Engine { world, structures, spawn, decorations, zoom: mcmap_data::seeds::zoom_seed(seed) })
+        let (world, spawn) = World::for_world_with_spawn(pack, seed, dimension, preset, dimension == Dimension::Overworld)?;
+        let cache = TileCache::for_world(&pack.version, world.surface.names(), seed, dimension, preset);
+        Engine::from_world(pack, world, spawn, cache)
+    }
+
+    pub fn from_world(
+        pack: &RawPack,
+        world: World,
+        spawn: Option<SpawnFinder>,
+        cache: Option<TileCache>,
+    ) -> Result<Engine, String> {
+        let (structures, decorations) = cached_rules(pack, world.dimension, world.surface.names())?;
+        let seed = world.seed;
+        Ok(Engine { world, structures, spawn, decorations, cache, zoom: mcmap_data::seeds::zoom_seed(seed) })
     }
 
     /// Every random-spread structure in the region.
@@ -217,14 +258,12 @@ impl Engine {
                     let (cx0, cz0) = ((rx + dx) * REGION, (rz + dz) * REGION);
                     let decs = if decorations { self.decorations_in(cx0, cz0) } else { Vec::new() };
                     for f in sets.iter().flat_map(|set| self.structures.in_area(&self.world, set, cx0, cz0, cx0 + REGION - 1, cz0 + REGION - 1)).chain(decs) {
-                        {
-                            if !kind.covers(&f.structure) {
-                                continue;
-                            }
-                            let d = (f.marker.0 as f64 - x).powi(2) + (f.marker.1 as f64 - z).powi(2);
-                            if best.as_ref().is_none_or(|b| d < b.0) {
-                                best = Some((d, f));
-                            }
+                        if !kind.covers(&f.structure) {
+                            continue;
+                        }
+                        let d = (f.marker.0 as f64 - x).powi(2) + (f.marker.1 as f64 - z).powi(2);
+                        if best.as_ref().is_none_or(|b| d < b.0) {
+                            best = Some((d, f));
                         }
                     }
                 }
@@ -330,7 +369,7 @@ impl MarkerStore {
         *self.shared.wake.lock().unwrap() = Some(w);
     }
 
-    /// Switch seeds. Spawn and strongholds start computing at once.
+    /// Switch seeds. Spawn and strongholds load from disk cache if present or start computing at once.
     pub fn set_engine(&mut self, engine: Option<Arc<Engine>>) {
         let generation = {
             let mut st = self.shared.state.lock().unwrap();
@@ -344,6 +383,25 @@ impl MarkerStore {
             st.generation
         };
         let Some(engine) = engine else { return };
+        if engine.spawn.is_none() {
+            return;
+        }
+        if let Some(cached) = engine
+            .cache
+            .as_ref()
+            .and_then(|c| c.get_blob(META_BLOB))
+            .and_then(|raw| serde_json::from_slice::<CachedWorldMeta>(&raw).ok())
+        {
+            if let Ok(mut st) = self.shared.state.lock()
+                && st.generation == generation
+            {
+                st.spawn = cached.spawn;
+                st.strongholds = Some(Arc::new(cached.strongholds));
+                st.dirty = true;
+            }
+            self.shared.wake();
+            return;
+        }
         let shared = self.shared.clone();
         let job = move || {
             let Some(finder) = &engine.spawn else { return };
@@ -355,7 +413,13 @@ impl MarkerStore {
                 st.dirty = true;
             }
             shared.wake();
-            let rings = Arc::new(engine.strongholds());
+            let rings = engine.strongholds();
+            if let Some(cache) = &engine.cache
+                && let Ok(bytes) = serde_json::to_vec(&CachedWorldMeta { spawn: Some(spawn), strongholds: rings.clone() })
+            {
+                cache.put_blob(META_BLOB, &bytes);
+            }
+            let rings = Arc::new(rings);
             if let Ok(mut st) = shared.state.lock()
                 && st.generation == generation
             {
@@ -375,7 +439,8 @@ impl MarkerStore {
         if self.workers.replace(true) {
             return;
         }
-        for i in 0..2 {
+        let n = (std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4) / 2).clamp(2, 6);
+        for i in 0..n {
             let s = self.shared.clone();
             std::thread::Builder::new().name(format!("mcmap-structures-{i}")).spawn(move || s.worker()).expect("spawn structure worker");
         }
@@ -383,6 +448,32 @@ impl MarkerStore {
 
     pub fn begin_frame(&self) {
         self.frame.set(self.frame.get() + 1);
+    }
+
+    /// In synchronous mode (snapshots/tests), evaluate missing structure regions in parallel.
+    pub fn prefetch_sync(&self, keys: &[(i32, i32)]) {
+        if !self.sync {
+            return;
+        }
+        let (engine, missing) = {
+            let st = self.shared.state.lock().unwrap();
+            let Some(e) = st.engine.clone() else { return };
+            let m: Vec<(i32, i32)> = keys.iter().copied().filter(|k| !st.regions.contains_key(k)).collect();
+            (e, m)
+        };
+        if missing.len() <= 1 {
+            return;
+        }
+        use rayon::prelude::*;
+        let computed: Vec<((i32, i32), Arc<Vec<Found>>)> = missing
+            .into_par_iter()
+            .map(|k| (k, Arc::new(engine.region(k))))
+            .collect();
+        let frame = self.frame.get();
+        let mut st = self.shared.state.lock().unwrap();
+        for (k, f) in computed {
+            st.regions.insert(k, Region::Done(f, frame));
+        }
     }
 
     /// The region's structures if done; otherwise queues it (or refreshes its priority).

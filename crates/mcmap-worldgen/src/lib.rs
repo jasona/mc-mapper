@@ -16,6 +16,8 @@ pub mod structure;
 pub mod world;
 
 use std::cell::Cell;
+use std::collections::HashMap;
+use std::sync::{Arc, LazyLock, Mutex};
 
 /// A biome as an index into [`Surface::names`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -29,10 +31,11 @@ pub trait BiomeSampler: Send + Sync {
 
 /// Surface biomes of one seed in one dimension. The Overworld and the Nether are multi-noise
 /// lookups; the End is `TheEndBiomeSource` (the central island, then the islands' erosion).
+#[derive(Clone)]
 pub struct Surface {
     pub climate: climate::ClimateSampler,
     pub tree: rtree::RTree,
-    names: Vec<String>,
+    names: Arc<[String]>,
     pub dimension: mcmap_data::Dimension,
     /// Tells this surface's search hint apart from another surface's on the same thread.
     id: u64,
@@ -46,6 +49,47 @@ fn next_id() -> u64 {
 /// `TheEndBiomeSource`'s biomes, in the order [`Surface::names`] lists them for the End.
 const END_BIOMES: [&str; 5] = ["minecraft:the_end", "minecraft:end_highlands", "minecraft:end_midlands", "minecraft:small_end_islands", "minecraft:end_barrens"];
 
+type CachedTree = (rtree::RTree, Arc<[String]>);
+type TreeKey = (usize, [u8; 16]);
+
+static TREE_CACHE: LazyLock<Mutex<HashMap<TreeKey, CachedTree>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn cached_tree(params_json: &str) -> Result<CachedTree, String> {
+    use md5::{Digest, Md5};
+    let digest: [u8; 16] = Md5::digest(params_json.as_bytes()).into();
+    let key = (params_json.len(), digest);
+    if let Some(hit) = TREE_CACHE.lock().unwrap().get(&key).cloned() {
+        return Ok(hit);
+    }
+    let (entries, names) = rtree::parse_parameters(params_json)?;
+    let built = (rtree::RTree::new(entries), Arc::<[String]>::from(names));
+    let mut map = TREE_CACHE.lock().unwrap();
+    Ok(map.entry(key).or_insert_with(|| built.clone()).clone())
+}
+
+pub(crate) fn tree_for_dimension(
+    pack: &mcmap_data::pack::RawPack,
+    dimension: mcmap_data::Dimension,
+) -> Result<CachedTree, String> {
+    use mcmap_data::Dimension;
+    match dimension {
+        Dimension::Overworld => {
+            let params = pack.overworld_parameters.as_deref().ok_or("the pack has no Overworld parameter list; extract it again with the oracle")?;
+            cached_tree(params)
+        }
+        Dimension::Nether => {
+            let params = pack.files.get(mcmap_data::pack::NETHER_PARAMETERS).ok_or("the pack has no Nether table; run `cargo run -q -p xtask -- extract --version 26.3` again")?;
+            cached_tree(params)
+        }
+        Dimension::End => {
+            let fake: Vec<String> = END_BIOMES.iter().map(|b| {
+                format!(r#"{{"biome":"{b}","temperature":[0,0],"humidity":[0,0],"continentalness":[0,0],"erosion":[0,0],"depth":[0,0],"weirdness":[0,0],"offset":0}}"#)
+            }).collect();
+            cached_tree(&format!(r#"{{"entries":[{}]}}"#, fake.join(",")))
+        }
+    }
+}
+
 thread_local! {
     /// The game keeps the last lookup result per thread and starts the next search from it. The
     /// hint belongs to one surface: another surface's index may not exist in this tree.
@@ -53,10 +97,18 @@ thread_local! {
 }
 
 impl Surface {
+    pub(crate) fn from_parts(
+        climate: climate::ClimateSampler,
+        tree: rtree::RTree,
+        names: Arc<[String]>,
+        dimension: mcmap_data::Dimension,
+    ) -> Surface {
+        Surface { climate, tree, names, dimension, id: next_id() }
+    }
+
     pub fn new(pack: &mcmap_data::pack::RawPack, seed: i64) -> Result<Surface, String> {
-        let params = pack.overworld_parameters.as_deref().ok_or("the pack has no Overworld parameter list; extract it again with the oracle")?;
-        let (entries, names) = rtree::parse_parameters(params)?;
-        Ok(Surface { climate: climate::ClimateSampler::overworld(&pack.files, seed)?, tree: rtree::RTree::new(entries), names, dimension: mcmap_data::Dimension::Overworld, id: next_id() })
+        let (tree, names) = tree_for_dimension(pack, mcmap_data::Dimension::Overworld)?;
+        Ok(Surface::from_parts(climate::ClimateSampler::overworld(&pack.files, seed)?, tree, names, mcmap_data::Dimension::Overworld))
     }
 
     /// Biomes of `dimension`. Nether needs a pack extracted with M4's oracle (its table is built
@@ -69,27 +121,14 @@ impl Surface {
     /// Overworld).
     pub fn for_world(pack: &mcmap_data::pack::RawPack, seed: i64, dimension: mcmap_data::Dimension, preset: mcmap_data::Preset) -> Result<Surface, String> {
         use mcmap_data::Dimension;
-        match dimension {
-            Dimension::Overworld => {
-                let params = pack.overworld_parameters.as_deref().ok_or("the pack has no Overworld parameter list; extract it again with the oracle")?;
-                let (entries, names) = rtree::parse_parameters(params)?;
-                let climate = climate::ClimateSampler::from_settings(&pack.files, seed, preset.settings())?;
-                Ok(Surface { climate, tree: rtree::RTree::new(entries), names, dimension, id: next_id() })
-            }
-            Dimension::Nether => {
-                let params = pack.files.get(mcmap_data::pack::NETHER_PARAMETERS).ok_or("the pack has no Nether table; run `cargo run -q -p xtask -- extract --version 26.3` again")?;
-                let (entries, names) = rtree::parse_parameters(params)?;
-                Ok(Surface { climate: climate::ClimateSampler::from_settings(&pack.files, seed, "minecraft:nether")?, tree: rtree::RTree::new(entries), names, dimension, id: next_id() })
-            }
-            Dimension::End => {
-                // The tree is never searched in the End; it only keeps the type uniform.
-                let fake: Vec<String> = END_BIOMES.iter().map(|b| {
-                    format!(r#"{{"biome":"{b}","temperature":[0,0],"humidity":[0,0],"continentalness":[0,0],"erosion":[0,0],"depth":[0,0],"weirdness":[0,0],"offset":0}}"#)
-                }).collect();
-                let (entries, names) = rtree::parse_parameters(&format!(r#"{{"entries":[{}]}}"#, fake.join(",")))?;
-                Ok(Surface { climate: climate::ClimateSampler::from_settings(&pack.files, seed, "minecraft:end")?, tree: rtree::RTree::new(entries), names, dimension, id: next_id() })
-            }
-        }
+        let (tree, names) = tree_for_dimension(pack, dimension)?;
+        let settings = match dimension {
+            Dimension::Overworld => preset.settings(),
+            Dimension::Nether => "minecraft:nether",
+            Dimension::End => "minecraft:end",
+        };
+        let climate = climate::ClimateSampler::from_settings(&pack.files, seed, settings)?;
+        Ok(Surface::from_parts(climate, tree, names, dimension))
     }
 
     /// `TheEndBiomeSource.getNoiseBiome`.
@@ -112,6 +151,10 @@ impl Surface {
         })
     }
 
+    pub fn is_end(&self) -> bool {
+        self.dimension == mcmap_data::Dimension::End
+    }
+
     /// Biome ids, e.g. `minecraft:plains`, indexed by [`BiomeId`].
     pub fn names(&self) -> &[String] {
         &self.names
@@ -122,11 +165,21 @@ impl Surface {
     }
 
     /// Biome at quart coordinates with an explicit search hint.
+    #[inline]
     pub fn biome_with_hint(&self, qx: i32, qz: i32, hint: &mut Option<u32>) -> BiomeId {
         if self.dimension == mcmap_data::Dimension::End {
             return self.end_biome(qx, qz);
         }
         BiomeId(self.tree.search(&self.climate.surface(qx, qz), hint))
+    }
+
+    /// Biome at quart coordinates with an explicit search hint and reusable [`density::Memo`].
+    #[inline]
+    pub fn biome_with_hint_memo(&self, qx: i32, qz: i32, hint: &mut Option<u32>, memo: &mut density::Memo) -> BiomeId {
+        if self.dimension == mcmap_data::Dimension::End {
+            return self.end_biome(qx, qz);
+        }
+        BiomeId(self.tree.search(&self.climate.surface_memo(qx, qz, memo), hint))
     }
 }
 

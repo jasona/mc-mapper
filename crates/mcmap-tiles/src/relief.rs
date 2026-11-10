@@ -24,11 +24,23 @@ pub fn shade(t: &Terrain, key: TileKey) -> Vec<u8> {
     let [ox, oz] = key.origin();
     let m = n / STEP + 3; // grid points -1 ..= n/STEP + 1
     let at = |g: usize, o: f64| (o + ((g as f64 - 1.0) * STEP as f64 + 0.5) * bpp).floor() as i32;
+    let xs: Vec<i32> = (0..m).map(|gi| at(gi, ox)).collect();
+    let zs: Vec<i32> = (0..m).map(|gj| at(gj, oz)).collect();
     let mut h = vec![0f32; m * m];
+    let mut memo = mcmap_worldgen::density::Memo::new(0);
     for gj in 0..m {
-        let z = at(gj, oz);
+        if gj > 0 && zs[gj] == zs[gj - 1] {
+            let (prev, curr) = h.split_at_mut(gj * m);
+            curr[..m].copy_from_slice(&prev[(gj - 1) * m..gj * m]);
+            continue;
+        }
+        let z = zs[gj];
         for gi in 0..m {
-            h[gj * m + gi] = height(t, at(gi, ox), z);
+            h[gj * m + gi] = if gi > 0 && xs[gi] == xs[gi - 1] {
+                h[gj * m + gi - 1]
+            } else {
+                (128.0 * t.offset_memo(xs[gi], z, &mut memo) + 128.0).max(SEA)
+            };
         }
     }
     // Shade at grid points 1 ..= n/STEP + 1 (pixel positions 0, STEP, ...).
@@ -65,12 +77,15 @@ pub fn shade(t: &Terrain, key: TileKey) -> Vec<u8> {
 
 /// Darken or lighten RGBA pixels by a shade layer: 128 leaves a pixel as it is.
 pub fn apply(rgba: &mut [u8], shade: &[u8]) {
-    for (p, &s) in rgba.chunks_exact_mut(4).zip(shade) {
+    let factors: [f32; 256] = std::array::from_fn(|s| {
         // Soften: a fully dark face keeps 60% of its colour, a lit one gains up to 25%.
-        let f = (1.0 + (s as f32 / 128.0 - 1.0) * 0.9).clamp(0.6, 1.25);
-        for c in &mut p[..3] {
-            *c = (*c as f32 * f).min(255.0) as u8;
-        }
+        (1.0 + (s as f32 / 128.0 - 1.0) * 0.9).clamp(0.6, 1.25)
+    });
+    for (p, &s) in rgba.chunks_exact_mut(4).zip(shade) {
+        let f = factors[s as usize];
+        p[0] = (p[0] as f32 * f).min(255.0) as u8;
+        p[1] = (p[1] as f32 * f).min(255.0) as u8;
+        p[2] = (p[2] as f32 * f).min(255.0) as u8;
     }
 }
 

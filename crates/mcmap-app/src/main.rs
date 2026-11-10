@@ -59,15 +59,38 @@ fn init() -> Map {
     let sprites = sprites::Sprites::load(&art_dir()).map_err(|e| eprintln!("mcmap: no marker art ({e})")).ok();
     let seed = std::env::var("MCMAP_SEED").ok().and_then(|s| seed_from_text(&s)).unwrap_or(DEFAULT_SEED);
     let pack = pack();
-    let world = pack.as_ref().and_then(|p| match mcmap_worldgen::Surface::new(p, seed) {
-        Ok(s) => {
-            let cache = diskcache::TileCache::for_world(&p.version, s.names(), seed, mcmap_data::Dimension::Overworld, mcmap_data::Preset::Normal);
-            let terrain = mcmap_worldgen::terrain::Terrain::overworld(&p.files, seed).ok();
-            Some(Arc::new(World::new(seed, s).with_cache(cache).with_terrain(terrain)))
-        }
-        Err(e) => {
-            eprintln!("mcmap: {e}");
-            None
+    let mut built_engine = None;
+    let world = pack.as_ref().and_then(|p| {
+        match mcmap_worldgen::world::World::for_world_with_spawn(
+            p,
+            seed,
+            mcmap_data::Dimension::Overworld,
+            mcmap_data::Preset::Normal,
+            true,
+        ) {
+            Ok((wg, spawn)) => {
+                let cache = diskcache::TileCache::for_world(
+                    &p.version,
+                    wg.surface.names(),
+                    seed,
+                    mcmap_data::Dimension::Overworld,
+                    mcmap_data::Preset::Normal,
+                );
+                let tile_world = Arc::new(
+                    World::new(seed, wg.surface.clone())
+                        .with_cache(cache.clone())
+                        .with_terrain(wg.terrain.clone()),
+                );
+                match markers::Engine::from_world(p, wg, spawn, cache) {
+                    Ok(e) => built_engine = Some(Arc::new(e)),
+                    Err(e) => eprintln!("mcmap: structures: {e}"),
+                }
+                Some(tile_world)
+            }
+            Err(e) => {
+                eprintln!("mcmap: {e}");
+                None
+            }
         }
     });
     let mut features = features::Features::load(&art_dir()).map_err(|e| eprintln!("mcmap: no feature picker ({e})")).ok();
@@ -81,11 +104,8 @@ fn init() -> Map {
     let mut map = Map::new(sprites, world);
     map.chrome = chrome::Chrome::load(&art_dir()).map_err(|e| eprintln!("mcmap: no UI textures ({e})")).ok();
     map.sprite_demo = std::env::var_os("MCMAP_SPRITE_DEMO").is_some();
-    if let Some(p) = &pack {
-        match markers::Engine::new(p, seed, mcmap_data::Dimension::Overworld) {
-            Ok(e) => map.markers.set_engine(Some(Arc::new(e))),
-            Err(e) => eprintln!("mcmap: structures: {e}"),
-        }
+    if let Some(e) = built_engine {
+        map.markers.set_engine(Some(e));
     }
     map.pack = pack;
     map.features = features;

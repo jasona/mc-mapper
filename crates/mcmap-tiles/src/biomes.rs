@@ -109,13 +109,17 @@ pub fn ids(surface: &Surface, key: TileKey) -> Vec<u16> {
     let bpp = blocks_per_pixel(key.level);
     let [ox, oz] = key.origin();
     let (qx, qz) = (quarts(ox, bpp), quarts(oz, bpp));
+    let is_end = surface.is_end();
     let mut out = vec![0u16; n * n];
     let mut hint = None;
+    let mut memo = mcmap_worldgen::density::Memo::new(64);
     let mut row: Vec<u16> = vec![0; n];
     for j in 0..n {
-        if j == 0 || qz[j] != qz[j - 1] {
+        let same_z = j > 0 && if is_end { (qz[j] >> 2) == (qz[j - 1] >> 2) } else { qz[j] == qz[j - 1] };
+        if !same_z {
             for i in 0..n {
-                row[i] = if i > 0 && qx[i] == qx[i - 1] { row[i - 1] } else { surface.biome_with_hint(qx[i], qz[j], &mut hint).0 };
+                let same_x = i > 0 && if is_end { (qx[i] >> 2) == (qx[i - 1] >> 2) } else { qx[i] == qx[i - 1] };
+                row[i] = if same_x { row[i - 1] } else { surface.biome_with_hint_memo(qx[i], qz[j], &mut hint, &mut memo).0 };
             }
         }
         out[j * n..(j + 1) * n].copy_from_slice(&row);
@@ -125,10 +129,11 @@ pub fn ids(surface: &Surface, key: TileKey) -> Vec<u16> {
 
 /// RGBA pixels of biome ids.
 pub fn paint(ids: &[u16], colors: &[[u8; 3]]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(ids.len() * 4);
-    for &id in ids {
-        let c = colors.get(id as usize).copied().unwrap_or([255, 0, 255]);
-        out.extend_from_slice(&[c[0], c[1], c[2], 255]);
+    let rgba: Vec<[u8; 4]> = colors.iter().map(|c| [c[0], c[1], c[2], 255]).collect();
+    let mut out = vec![0u8; ids.len() * 4];
+    for (px, &id) in out.chunks_exact_mut(4).zip(ids) {
+        let c = rgba.get(id as usize).copied().unwrap_or([255, 0, 255, 255]);
+        px.copy_from_slice(&c);
     }
     out
 }
