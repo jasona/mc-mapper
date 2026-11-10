@@ -100,6 +100,8 @@ fn oracle(i: &Install, v: &VersionFiles, args: &[String]) -> Result<String, Stri
     let mut full = vec![out];
     full.extend(cp);
     let o = Command::new(java::tool(&home, "java"))
+        // The game's joml uses sun.misc.Unsafe; silence the JDK's deprecation banner.
+        .arg("--sun-misc-unsafe-memory-access=allow")
         .arg("-cp")
         .arg(java::join(&full))
         .arg("mcmap.oracle.Oracle")
@@ -198,6 +200,8 @@ fn agent(cli: &Cli, version: &str) -> Result<(), String> {
     let mut cp = vec![jar];
     cp.extend(game_classpath(&i, &v)?);
     let st = Command::new(java::tool(&home, "java"))
+        // The game's joml uses sun.misc.Unsafe; silence the JDK's deprecation banner.
+        .arg("--sun-misc-unsafe-memory-access=allow")
         .arg("-cp")
         .arg(java::join(&cp))
         .arg("mcmap.agent.SelfCheck")
