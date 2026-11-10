@@ -11,6 +11,7 @@
 //! table in [`KINDS`].
 
 use mcmap_data::pack::RawPack;
+use mcmap_data::Dimension;
 use mcmap_worldgen::structure::{Found, Placement, Structures};
 use mcmap_worldgen::world::{SpawnFinder, World};
 use rune::Waker;
@@ -54,6 +55,19 @@ pub const KINDS: &[Kind] = &[
     Kind { label: "Trail Ruins", ids: &["trail_ruins"], sprite: 44 },
     Kind { label: "Trial Chamber", ids: &["trial_chambers"], sprite: 65 },
     Kind { label: "Abandoned Camp", ids: &["abandoned_camp_*"], sprite: 1 },
+    Kind { label: "Nether Fortress", ids: &["fortress"], sprite: 32 },
+    Kind { label: "Bastion Remnant", ids: &["bastion_remnant"], sprite: 67 },
+    Kind { label: "Ruined Portal Nether", ids: &["ruined_portal_nether"], sprite: 41 },
+    Kind { label: "End City", ids: &["end_city"], sprite: 23 },
+];
+
+/// Picker entries the art manifest doesn't have (its picker is the Overworld's), drawn with
+/// marker sprites: (dimension, label, sprite). The bastion sprite is a guess from the art.
+pub const EXTRA_PICKER: &[(Dimension, &str, usize)] = &[
+    (Dimension::Nether, "Nether Fortress", 32),
+    (Dimension::Nether, "Bastion Remnant", 67),
+    (Dimension::Nether, "Ruined Portal Nether", 41),
+    (Dimension::End, "End City", 23),
 ];
 
 pub const SPAWN_SPRITE: usize = 43;
@@ -109,14 +123,15 @@ pub fn display_name(structure: &str) -> String {
 pub struct Engine {
     pub world: World,
     pub structures: Structures,
-    pub spawn: SpawnFinder,
+    /// The Overworld's spawn search; none in the Nether and the End.
+    pub spawn: Option<SpawnFinder>,
 }
 
 impl Engine {
-    pub fn new(pack: &RawPack, seed: i64) -> Result<Engine, String> {
-        let world = World::new(pack, seed)?;
+    pub fn new(pack: &RawPack, seed: i64, dimension: Dimension) -> Result<Engine, String> {
+        let world = World::for_dimension(pack, seed, dimension)?;
         let structures = Structures::new(&pack.files, world.surface.names())?;
-        let spawn = SpawnFinder::overworld(&pack.files, seed)?;
+        let spawn = if dimension == Dimension::Overworld { Some(SpawnFinder::overworld(&pack.files, seed)?) } else { None };
         Ok(Engine { world, structures, spawn })
     }
 
@@ -293,7 +308,8 @@ impl MarkerStore {
         let Some(engine) = engine else { return };
         let shared = self.shared.clone();
         let job = move || {
-            let spawn = engine.spawn.find();
+            let Some(finder) = &engine.spawn else { return };
+            let spawn = finder.find();
             if let Ok(mut st) = shared.state.lock()
                 && st.generation == generation
             {

@@ -16,6 +16,7 @@ use crate::sprites::Sprites;
 use crate::tiles::{TileStore, World};
 use mcmap_data::link::{parse_link, seed_from_text};
 use mcmap_data::pack::RawPack;
+use mcmap_data::Dimension;
 use mcmap_live::Fix;
 use mcmap_tiles::pyramid::{blocks_per_pixel, tile_blocks, Camera, TileKey, TILE};
 use mcmap_worldgen::structure::Found;
@@ -102,6 +103,7 @@ pub struct Map {
     pub sprite_demo: bool,
     pub markers: MarkerStore,
     pub selected: Option<Selected>,
+    pub dimension: Dimension,
 }
 
 impl Map {
@@ -130,6 +132,7 @@ impl Map {
             sprite_demo: true,
             markers: MarkerStore::new(),
             selected: None,
+            dimension: Dimension::Overworld,
         }
     }
 
@@ -238,37 +241,60 @@ impl Map {
                 self.camera.center = [x, z];
                 self.follow = false;
             }
-            if l.dimension.is_some_and(|d| d != mcmap_data::Dimension::Overworld) {
-                self.status = "Only the Overworld is mapped so far (the Nether and End come in M4)".into();
-            }
             if l.version.as_deref().is_some_and(|v| v != "26.3") {
                 self.status = format!("The link is for {}; showing 26.3, the only version pack so far", l.version.as_deref().unwrap_or("?"));
             }
         }
-        self.set_seed(seed);
+        let dimension = link.as_ref().and_then(|l| l.dimension).unwrap_or(self.dimension);
+        self.load_world(seed, dimension);
         self.seed_field = TextEdit::new(&seed.to_string());
     }
 
-    pub fn set_seed(&mut self, seed: i64) {
-        if self.tiles.world().is_some_and(|w| w.seed == seed) {
+    /// Switch dimension. The view keeps its place: Nether coordinates are an eighth of the
+    /// Overworld's.
+    pub fn set_dimension(&mut self, d: Dimension) {
+        if d == self.dimension {
+            return;
+        }
+        let k = match (self.dimension, d) {
+            (Dimension::Overworld, Dimension::Nether) => 0.125,
+            (Dimension::Nether, Dimension::Overworld) => 8.0,
+            _ => 1.0,
+        };
+        if d == Dimension::End {
+            self.camera.center = [0.0, 0.0];
+        } else if self.dimension != Dimension::End {
+            self.camera.center = [self.camera.center[0] * k, self.camera.center[1] * k];
+        }
+        let seed = self.tiles.world().map(|w| w.seed);
+        if let Some(seed) = seed {
+            self.load_world(seed, d);
+        } else {
+            self.dimension = d;
+        }
+    }
+
+    fn load_world(&mut self, seed: i64, dimension: Dimension) {
+        if self.tiles.world().is_some_and(|w| w.seed == seed) && self.dimension == dimension {
             return;
         }
         let Some(pack) = self.pack.clone() else {
             self.status = "No version pack: run `cargo run -q -p xtask -- extract --version 26.3`".into();
             return;
         };
-        match mcmap_worldgen::Surface::new(&pack, seed) {
+        match mcmap_worldgen::Surface::for_dimension(&pack, seed, dimension) {
             Ok(s) => {
+                self.dimension = dimension;
                 self.tiles.set_world(Some(Arc::new(World::new(seed, s))));
                 self.selected = None;
-                match Engine::new(&pack, seed) {
+                match Engine::new(&pack, seed, dimension) {
                     Ok(e) => self.markers.set_engine(Some(Arc::new(e))),
                     Err(e) => {
                         self.markers.set_engine(None);
                         self.status = format!("Structures: {e}");
                     }
                 }
-                if !self.status.starts_with("Only") && !self.status.starts_with("The link") {
+                if !self.status.starts_with("The link") {
                     self.status.clear();
                 }
             }
@@ -430,7 +456,9 @@ pub fn view(s: &Map, cx: &mut Cx<Map>) -> El {
         const COLUMNS: usize = 3;
         let mut picker = col().key("features").pin(Some(10.0), Some(10.0), None, None).padding(6.0).gap(4.0).radius(8.0).fill(Color { r: 0.1, g: 0.1, b: 0.12, a: 0.85 });
         let mut line = row().gap(4.0);
-        for (i, feat) in f.list.iter().enumerate() {
+        let shown: Vec<(usize, &crate::features::Feature)> = f.list.iter().enumerate().filter(|(_, x)| x.dimension.is_none_or(|d| d == s.dimension)).collect();
+        let count = shown.len();
+        for (n, (i, feat)) in shown.into_iter().enumerate() {
             let on = f.is_on(&feat.label);
             let [w, h] = f.size(i);
             let label = feat.label.clone();
@@ -450,7 +478,7 @@ pub fn view(s: &Map, cx: &mut Cx<Map>) -> El {
                         move |s: &mut Map, _p, _tx: &mut Tx| s.nearest(&label)
                     }),
             );
-            if i % COLUMNS == COLUMNS - 1 || i + 1 == f.list.len() {
+            if n % COLUMNS == COLUMNS - 1 || n + 1 == count {
                 picker = picker.child(std::mem::replace(&mut line, row().gap(4.0)));
             }
         }
@@ -517,10 +545,13 @@ pub fn view(s: &Map, cx: &mut Cx<Map>) -> El {
         .on_submit(|s: &mut Map, _tx: &mut Tx| s.submit_seed());
     let seed_box = row().h(28.0).px(8.0).items_center().radius(6.0).fill(rgb(0.06, 0.06, 0.08)).border(1.0, rgb(0.28, 0.29, 0.34)).child(seed);
 
+    let dim_button = |label: &str, d: Dimension| {
+        button(label, s.dimension == d).key(format!("dim/{label}")).on_press(move |s: &mut Map| s.set_dimension(d))
+    };
     let dims = row().gap(4.0)
-        .child(button("Overworld", true).key("dim/overworld"))
-        .child(button("Nether", false).key("dim/nether").opacity(0.5).on_press(|s: &mut Map| s.status = "The Nether comes in M4".into()))
-        .child(button("End", false).key("dim/end").opacity(0.5).on_press(|s: &mut Map| s.status = "The End comes in M4".into()));
+        .child(dim_button("Overworld", Dimension::Overworld))
+        .child(dim_button("Nether", Dimension::Nether))
+        .child(dim_button("End", Dimension::End));
     let version = s.tiles.world().map(|_| "Java 26.3").unwrap_or("no pack");
     let mut bar = row().key("bar").w_full().h(BAR).px(10.0).gap(10.0).items_center().fill(rgb(0.12, 0.12, 0.15))
         .child(text("Seed").color(rgb(0.7, 0.72, 0.76)))
@@ -576,7 +607,7 @@ fn overlay(s: &Map, f: &Features, l: &Layout, mut world: El, scale: f64) -> El {
     let d = blocks_per_pixel(l.level) * l.scale;
     let zoom = s.camera.zoom;
 
-    if f.is_on("Slime Chunk") && zoom >= SLIME_ZOOM {
+    if f.is_on_in("Slime Chunk", s.dimension) && zoom >= SLIME_ZOOM {
         let seed = s.tiles.world().map(|w| w.seed);
         if let Some(seed) = seed {
             let (cx0, cz0, cx1, cz1) = ((x0 / 16.0).floor() as i32, (z0 / 16.0).floor() as i32, (x1 / 16.0).ceil() as i32, (z1 / 16.0).ceil() as i32);
@@ -616,7 +647,7 @@ fn overlay(s: &Map, f: &Features, l: &Layout, mut world: El, scale: f64) -> El {
         )
     };
 
-    let any = markers::KINDS.iter().any(|k| f.is_on(k.label));
+    let any = markers::KINDS.iter().any(|k| f.is_on_in(k.label, s.dimension));
     if any && zoom >= STRUCTURE_ZOOM {
         let r = (REGION * 16) as f64;
         let (rx0, rz0, rx1, rz1) = ((x0 / r).floor() as i32, (z0 / r).floor() as i32, ((x1 / r).ceil() as i32) - 1, ((z1 / r).ceil() as i32) - 1);
@@ -636,14 +667,14 @@ fn overlay(s: &Map, f: &Features, l: &Layout, mut world: El, scale: f64) -> El {
             }
         }
         store.end_frame(&asked);
-        if f.is_on("Stronghold")
+        if f.is_on_in("Stronghold", s.dimension)
             && let Some(sh) = s.markers.strongholds()
         {
             found.extend(sh.iter().cloned());
         }
         for st in &found {
             let Some(k) = markers::kind_of(&st.structure) else { continue };
-            if !f.is_on(k.label) {
+            if !f.is_on_in(k.label, s.dimension) {
                 continue;
             }
             let (bx, bz) = (st.marker.0 as f64 + 0.5, st.marker.1 as f64 + 0.5);
@@ -654,7 +685,7 @@ fn overlay(s: &Map, f: &Features, l: &Layout, mut world: El, scale: f64) -> El {
             world = icon(world, key, markers::sprite_for(k, &st.structure), [bx, bz], Selected::of(st));
         }
     }
-    if f.is_on("Spawn Point")
+    if f.is_on_in("Spawn Point", s.dimension)
         && let Some((x, z)) = s.markers.spawn()
     {
         let sel = Selected { name: "World spawn (search point)".into(), x, y: None, z, likely: true };

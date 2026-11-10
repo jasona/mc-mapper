@@ -1,6 +1,5 @@
 //! The feature picker's icons, cut from `ui/feature-atlas.webp` with the rectangles in the art
-//! manifest. Which features are on is kept here; only Biomes draws anything until M3 brings
-//! structures.
+//! manifest. Which features are on is kept here; 
 
 use mcmap_tiles::atlas::{Rect, Rgba};
 use rune::Pixels;
@@ -33,6 +32,8 @@ struct ManifestRect {
 pub struct Feature {
     pub label: String,
     image: Rgba,
+    /// The dimension whose picker shows it; `None` for every dimension (Biomes).
+    pub dimension: Option<mcmap_data::Dimension>,
 }
 
 pub struct Features {
@@ -53,9 +54,25 @@ impl Features {
             .rectangles
             .into_iter()
             .filter(|r| r.x + r.width <= atlas.w && r.y + r.height <= atlas.h)
-            .map(|r| Feature { image: atlas.crop(Rect { x: r.x, y: r.y, w: r.width, h: r.height }), label: r.label })
+            .map(|r| Feature {
+                image: atlas.crop(Rect { x: r.x, y: r.y, w: r.width, h: r.height }),
+                dimension: (r.label != "Biomes").then_some(mcmap_data::Dimension::Overworld),
+                label: r.label,
+            })
             .collect();
         Ok(Features { list, on: ["Biomes".to_owned()].into(), uploaded: RefCell::new(HashMap::new()) })
+    }
+
+    /// Add a picker entry for another dimension, with its icon scaled to the picker's size.
+    pub fn push(&mut self, label: &str, image: &Rgba, dimension: mcmap_data::Dimension) {
+        let size = self.list.first().map(|f| f.image.w).unwrap_or(22);
+        let image = image.fit(size, size);
+        self.list.push(Feature { label: label.to_owned(), image, dimension: Some(dimension) });
+    }
+
+    /// On, and in the picker of `dimension`.
+    pub fn is_on_in(&self, label: &str, dimension: mcmap_data::Dimension) -> bool {
+        self.is_on(label) && self.list.iter().any(|f| f.label == label && f.dimension.is_none_or(|d| d == dimension))
     }
 
     pub fn is_on(&self, label: &str) -> bool {

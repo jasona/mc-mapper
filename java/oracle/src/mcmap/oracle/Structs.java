@@ -52,6 +52,8 @@ import net.minecraft.world.level.storage.LevelStorageSource;
  * heightmaps so the terrain approximation can be measured ("height" lines).
  */
 final class Structs {
+    private static net.minecraft.resources.ResourceKey<Level> level = Level.OVERWORLD;
+
     static void run(HolderLookup.Provider reg, PrintStream log, String[] a) throws Exception {
         long seed = Long.parseLong(a[1]);
         int cx0 = Integer.parseInt(a[2]), cz0 = Integer.parseInt(a[3]);
@@ -69,26 +71,34 @@ final class Structs {
         layers = layers.replaceFrom(net.minecraft.server.RegistryLayer.WORLD, worldgen);
         RegistryAccess access = layers.compositeAccess();
         reg = access;
-        Holder<NoiseGeneratorSettings> settings = reg.lookupOrThrow(Registries.NOISE_SETTINGS).getOrThrow(NoiseGeneratorSettings.OVERWORLD);
-        Holder<MultiNoiseBiomeSourceParameterList> preset = reg.lookupOrThrow(Registries.MULTI_NOISE_BIOME_SOURCE_PARAMETER_LIST)
-            .getOrThrow(MultiNoiseBiomeSourceParameterLists.OVERWORLD);
-        MultiNoiseBiomeSource source = MultiNoiseBiomeSource.createFromPreset(preset);
+        String dim = a.length > 7 ? a[7] : "overworld";
+        boolean over = dim.equals("overworld");
+        Holder<NoiseGeneratorSettings> settings = reg.lookupOrThrow(Registries.NOISE_SETTINGS).getOrThrow(
+            over ? NoiseGeneratorSettings.OVERWORLD : dim.equals("nether") ? NoiseGeneratorSettings.NETHER : NoiseGeneratorSettings.END);
+        net.minecraft.world.level.biome.BiomeSource source = dim.equals("end")
+            ? net.minecraft.world.level.biome.TheEndBiomeSource.create(reg.lookupOrThrow(Registries.BIOME))
+            : MultiNoiseBiomeSource.createFromPreset(reg.lookupOrThrow(Registries.MULTI_NOISE_BIOME_SOURCE_PARAMETER_LIST)
+                .getOrThrow(over ? MultiNoiseBiomeSourceParameterLists.OVERWORLD : MultiNoiseBiomeSourceParameterLists.NETHER));
+        level = over ? Level.OVERWORLD : dim.equals("nether") ? Level.NETHER : Level.END;
         NoiseBasedChunkGenerator gen = new NoiseBasedChunkGenerator(source, settings);
         RandomState random = RandomState.create(reg.lookupOrThrow(Registries.NOISE), seed, settings.value());
         HolderLookup<StructureSet> sets = reg.lookupOrThrow(Registries.STRUCTURE_SET);
         ChunkGeneratorStructureState state = gen.createState(sets, random, seed);
         StructureTemplateManager templates = new StructureTemplateManager(rm, storage, DataFixers.getDataFixer(), reg.lookupOrThrow(Registries.BLOCK));
-        LevelHeightAccessor height = LevelHeightAccessor.create(-64, 384);
+        LevelHeightAccessor height = over ? LevelHeightAccessor.create(-64, 384) : LevelHeightAccessor.create(0, 256);
         net.minecraft.world.level.biome.Climate.Sampler sampler = random.createClimateSampler(
             net.minecraft.world.level.levelgen.densityfunction.SamplerContext.builder().enableCaches().build());
         int lines = 0;
         try (PrintStream o = new PrintStream(new FileOutputStream(a[6]), false, StandardCharsets.UTF_8)) {
             JsonObject meta = new JsonObject();
             meta.addProperty("meta", true); meta.addProperty("seed", seed);
+            meta.addProperty("dimension", dim);
             meta.addProperty("cx0", cx0); meta.addProperty("cz0", cz0); meta.addProperty("cx1", cx1); meta.addProperty("cz1", cz1);
-            BlockPos spawn = net.minecraft.world.level.levelgen.NoiseSpawnFinder.findSpawnPosition(settings.value().spawnTarget(),
-                random.samplersWithContext(net.minecraft.world.level.levelgen.densityfunction.SamplerContext.builder().enableCaches().build()));
-            meta.addProperty("spawn_x", spawn.getX()); meta.addProperty("spawn_z", spawn.getZ());
+            if (over) {
+                BlockPos spawn = net.minecraft.world.level.levelgen.NoiseSpawnFinder.findSpawnPosition(settings.value().spawnTarget(),
+                    random.samplersWithContext(net.minecraft.world.level.levelgen.densityfunction.SamplerContext.builder().enableCaches().build()));
+                meta.addProperty("spawn_x", spawn.getX()); meta.addProperty("spawn_z", spawn.getZ());
+            }
             o.println(meta);
             for (Holder<StructureSet> hs : state.possibleStructureSets()) {
                 String setId = hs.unwrapKey().map(k -> k.identifier().toString()).orElse("?");
@@ -164,12 +174,12 @@ final class Structs {
 
     /** One tryGenerateStructure: returns the start when it is valid, else null. Records the stub. */
     private static StructureStart attempt(StructureSet.StructureSelectionEntry e, RegistryAccess access, NoiseBasedChunkGenerator gen,
-                                          MultiNoiseBiomeSource source, RandomState random, StructureTemplateManager templates,
+                                          net.minecraft.world.level.biome.BiomeSource source, RandomState random, StructureTemplateManager templates,
                                           long seed, ChunkPos pos, LevelHeightAccessor height, net.minecraft.world.level.biome.Climate.Sampler sampler, JsonObject j, com.google.gson.JsonArray tried) {
         Structure s = e.structure().value();
         tried.add(id(e.structure()));
         java.util.function.Predicate<Holder<Biome>> valid = s.biomes()::contains;
-        StructureStart start = s.generate(e.structure(), Level.OVERWORLD, access, gen, source, sampler, random, templates, seed, pos, 0, height, valid);
+        StructureStart start = s.generate(e.structure(), level, access, gen, source, sampler, random, templates, seed, pos, 0, height, valid);
         if (!start.isValid()) return null;
         Structure.GenerationContext ctx = new Structure.GenerationContext(access, gen, source, sampler, random, templates, seed, pos, height, valid);
         Optional<Structure.GenerationStub> stub = s.findValidGenerationPoint(ctx);

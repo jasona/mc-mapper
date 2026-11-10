@@ -26,8 +26,14 @@ pub struct ClimateSampler {
 impl ClimateSampler {
     /// The Overworld router of the pack, for `seed`.
     pub fn overworld(files: &Files, seed: i64) -> Result<ClimateSampler, String> {
+        ClimateSampler::from_settings(files, seed, "minecraft:overworld")
+    }
+
+    /// The router of any noise settings (`minecraft:nether`, `minecraft:end`, ...).
+    pub fn from_settings(files: &Files, seed: i64, settings: &str) -> Result<ClimateSampler, String> {
         let mut b = Builder::new(files, world_positional(seed));
-        let settings = b.json("noise_settings", "minecraft:overworld")?;
+        b.seed = seed;
+        let settings = b.json("noise_settings", settings)?;
         let router = &settings["noise_router"];
         let mut get = |k: &str| b.build(&router[k]).map_err(|e| format!("noise_router.{k}: {e}"));
         let mut c = ClimateSampler {
@@ -63,6 +69,11 @@ impl ClimateSampler {
             self.erosion.eval(x, y, z),
             self.weirdness.eval(x, y, z),
         ]
+    }
+
+    /// The erosion entry, which the End biome source reads on its own.
+    pub fn erosion(&self) -> &Df {
+        &self.erosion
     }
 
     fn all(&self) -> [&Df; 5] {

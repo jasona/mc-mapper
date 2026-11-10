@@ -34,6 +34,12 @@ pub enum Df {
     Spline(Box<Spline>),
     /// `find_top_surface`: the highest y on a `cell` grid below `upper` where `density` > 0.
     TopSurface { density: Box<Df>, upper: Box<Df>, lower: i32, cell: i32 },
+    /// `slice`: the input with one axis (0 x, 1 y, 2 z) held at a coordinate.
+    Slice { axis: u8, coord: i32, input: Box<Df> },
+    /// `distance_to_point` with a metric: 0 euclidean, 1 euclidean squared, 2 manhattan, 3 chebyshev.
+    Distance { metric: u8, point: [i32; 3] },
+    /// `end_outer_islands`: `(getHeightValue(x / 8, z / 8) - 8) / 128`.
+    EndIslands(Arc<crate::noise::Simplex>),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -203,6 +209,21 @@ impl Df {
                 from_value + (c.clamp(*min, *max) - from) as f32 * factor
             }
             Df::Spline(s) => s.sample(x, y, z),
+            Df::Slice { axis, coord, input } => match axis {
+                0 => input.eval(*coord, y, z),
+                1 => input.eval(x, *coord, z),
+                _ => input.eval(x, y, *coord),
+            },
+            Df::Distance { metric, point } => {
+                let (a, b, c) = ((point[0] - x) as f32, (point[1] - y) as f32, (point[2] - z) as f32);
+                match metric {
+                    0 => (a * a + b * b + c * c).sqrt(),
+                    1 => a * a + b * b + c * c,
+                    2 => a.abs() + b.abs() + c.abs(),
+                    _ => a.abs().max(b.abs()).max(c.abs()),
+                }
+            }
+            Df::EndIslands(n) => (crate::noise::end_island_height(n, x / 8, z / 8) - 8.0) / 128.0,
             Df::TopSurface { density, upper, lower, cell } => {
                 let u = upper.eval(x, y, z);
                 let top = (u / *cell as f32).floor() as i32 * cell;
@@ -227,6 +248,8 @@ pub struct Builder<'a> {
     files: &'a Files,
     random: Positional,
     noises: BTreeMap<String, Arc<NormalNoise>>,
+    /// The world seed, for the End islands' legacy random.
+    pub seed: i64,
 }
 
 fn file_of(kind: &str, id: &str) -> String {
@@ -240,7 +263,7 @@ fn strip(t: &str) -> &str {
 
 impl<'a> Builder<'a> {
     pub fn new(files: &'a Files, random: Positional) -> Builder<'a> {
-        Builder { files, random, noises: BTreeMap::new() }
+        Builder { files, random, noises: BTreeMap::new(), seed: 0 }
     }
 
     pub fn json(&self, kind: &str, id: &str) -> Result<Value, String> {
@@ -256,7 +279,13 @@ impl<'a> Builder<'a> {
             return Ok(n.clone());
         }
         let params: NoiseParams = serde_json::from_value(self.json("noise", &id)?).map_err(|e| format!("noise {id}: {e}"))?;
-        let n = Arc::new(NormalNoise::create(&params, &mut self.random.from_hash_of(&id))?);
+        // `RandomState`'s compile context: the Nether biome noises keep their legacy seeding in
+        // every dimension.
+        let n = Arc::new(match id.as_str() {
+            "minecraft:nether/temperature" => NormalNoise::legacy_nether(&params, &mut crate::random::Legacy::new(self.seed))?,
+            "minecraft:nether/vegetation" => NormalNoise::legacy_nether(&params, &mut crate::random::Legacy::new(self.seed.wrapping_add(1)))?,
+            _ => NormalNoise::create(&params, &mut self.random.from_hash_of(&id))?,
+        });
         self.noises.insert(id, n.clone());
         Ok(n)
     }
@@ -368,6 +397,30 @@ impl<'a> Builder<'a> {
                         let lower = o.get("lower_bound").and_then(Value::as_i64).ok_or("find_top_surface without lower_bound")? as i32;
                         let cell = o.get("cell_height").and_then(Value::as_i64).ok_or("find_top_surface without cell_height")? as i32;
                         Ok(Df::TopSurface { density, upper, lower, cell })
+                    }
+                    "slice" => {
+                        let axis = match o.get("axis").and_then(Value::as_str).unwrap_or("y") { "x" => 0, "y" => 1, _ => 2 };
+                        let coord = o.get("coordinate").and_then(Value::as_i64).unwrap_or(0) as i32;
+                        Ok(Df::Slice { axis, coord, input: Box::new(self.build(o.get("input").or(o.get("argument")).ok_or("slice without an input")?)?) })
+                    }
+                    "distance_to_point" => {
+                        let metric = match o.get("metric").and_then(Value::as_str).map(strip).unwrap_or("euclidean") {
+                            "euclidean" => 0,
+                            "euclidean_squared" => 1,
+                            "manhattan" => 2,
+                            "chebyshev" => 3,
+                            m => return Err(format!("distance metric {m:?} is not supported")),
+                        };
+                        let p = o.get("point").and_then(Value::as_array).ok_or("distance_to_point without a point")?;
+                        let g = |i: usize| p.get(i).and_then(Value::as_i64).unwrap_or(0) as i32;
+                        Ok(Df::Distance { metric, point: [g(0), g(1), g(2)] })
+                    }
+                    "end_outer_islands" | "end_islands" => {
+                        let mut r = crate::random::Legacy::new(self.seed);
+                        for _ in 0..17292 {
+                            r.next_int();
+                        }
+                        Ok(Df::EndIslands(Arc::new(crate::noise::Simplex::new(&mut r, true))))
                     }
                     other => Err(format!("density function type {other:?} is not supported yet")),
                 }

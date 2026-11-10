@@ -26,12 +26,17 @@ pub trait BiomeSampler: Send + Sync {
     fn biome(&self, qx: i32, qy: i32, qz: i32) -> BiomeId;
 }
 
-/// Surface biomes of one Overworld seed.
+/// Surface biomes of one seed in one dimension. The Overworld and the Nether are multi-noise
+/// lookups; the End is `TheEndBiomeSource` (the central island, then the islands' erosion).
 pub struct Surface {
     pub climate: climate::ClimateSampler,
     pub tree: rtree::RTree,
     names: Vec<String>,
+    pub dimension: mcmap_data::Dimension,
 }
+
+/// `TheEndBiomeSource`'s biomes, in the order [`Surface::names`] lists them for the End.
+const END_BIOMES: [&str; 5] = ["minecraft:the_end", "minecraft:end_highlands", "minecraft:end_midlands", "minecraft:small_end_islands", "minecraft:end_barrens"];
 
 thread_local! {
     /// The game keeps the last lookup result per thread and starts the next search from it.
@@ -42,7 +47,49 @@ impl Surface {
     pub fn new(pack: &mcmap_data::pack::RawPack, seed: i64) -> Result<Surface, String> {
         let params = pack.overworld_parameters.as_deref().ok_or("the pack has no Overworld parameter list; extract it again with the oracle")?;
         let (entries, names) = rtree::parse_parameters(params)?;
-        Ok(Surface { climate: climate::ClimateSampler::overworld(&pack.files, seed)?, tree: rtree::RTree::new(entries), names })
+        Ok(Surface { climate: climate::ClimateSampler::overworld(&pack.files, seed)?, tree: rtree::RTree::new(entries), names, dimension: mcmap_data::Dimension::Overworld })
+    }
+
+    /// Biomes of `dimension`. Nether needs a pack extracted with M4's oracle (its table is built
+    /// in code, like the Overworld's).
+    pub fn for_dimension(pack: &mcmap_data::pack::RawPack, seed: i64, dimension: mcmap_data::Dimension) -> Result<Surface, String> {
+        use mcmap_data::Dimension;
+        match dimension {
+            Dimension::Overworld => Surface::new(pack, seed),
+            Dimension::Nether => {
+                let params = pack.files.get(mcmap_data::pack::NETHER_PARAMETERS).ok_or("the pack has no Nether table; run `cargo run -q -p xtask -- extract --version 26.3` again")?;
+                let (entries, names) = rtree::parse_parameters(params)?;
+                Ok(Surface { climate: climate::ClimateSampler::from_settings(&pack.files, seed, "minecraft:nether")?, tree: rtree::RTree::new(entries), names, dimension })
+            }
+            Dimension::End => {
+                // The tree is never searched in the End; it only keeps the type uniform.
+                let fake: Vec<String> = END_BIOMES.iter().map(|b| {
+                    format!(r#"{{"biome":"{b}","temperature":[0,0],"humidity":[0,0],"continentalness":[0,0],"erosion":[0,0],"depth":[0,0],"weirdness":[0,0],"offset":0}}"#)
+                }).collect();
+                let (entries, names) = rtree::parse_parameters(&format!(r#"{{"entries":[{}]}}"#, fake.join(",")))?;
+                Ok(Surface { climate: climate::ClimateSampler::from_settings(&pack.files, seed, "minecraft:end")?, tree: rtree::RTree::new(entries), names, dimension })
+            }
+        }
+    }
+
+    /// `TheEndBiomeSource.getNoiseBiome`.
+    fn end_biome(&self, qx: i32, qz: i32) -> BiomeId {
+        let (x, z) = (qx << 2, qz << 2);
+        let (sx, sz) = ((x >> 4) as i64, (z >> 4) as i64);
+        if sx * sx + sz * sz <= 4096 {
+            return BiomeId(0);
+        }
+        let (ex, ez) = (((x >> 4) * 2 + 1) * 8, ((z >> 4) * 2 + 1) * 8);
+        let d = self.climate.erosion().eval(ex, 64, ez) as f64;
+        BiomeId(if d > 0.25 {
+            1
+        } else if d >= -0.0625 {
+            2
+        } else if d < -0.21875 {
+            3
+        } else {
+            4
+        })
     }
 
     /// Biome ids, e.g. `minecraft:plains`, indexed by [`BiomeId`].
@@ -56,6 +103,9 @@ impl Surface {
 
     /// Biome at quart coordinates with an explicit search hint.
     pub fn biome_with_hint(&self, qx: i32, qz: i32, hint: &mut Option<u32>) -> BiomeId {
+        if self.dimension == mcmap_data::Dimension::End {
+            return self.end_biome(qx, qz);
+        }
         BiomeId(self.tree.search(&self.climate.surface(qx, qz), hint))
     }
 }

@@ -79,7 +79,8 @@ public final class Oracle {
                 out.println(o);
             }
             case "grid" -> grid(args);
-            case "params" -> params(args[1]);
+            case "params" -> params(args[1], args.length > 2 ? args[2] : "overworld");
+            case "dimgrid" -> dimgrid(args);
             case "climgrid" -> climgrid(args);
             case "structs" -> Structs.run(registries, out, args);
             case "dfgrid" -> dfgrid(args);
@@ -220,10 +221,10 @@ public final class Oracle {
     }
 
     /** The Overworld parameter list, the table the jar builds in code rather than shipping as data. */
-    private static void params(String path) throws Exception {
+    private static void params(String path, String preset) throws Exception {
         MultiNoiseBiomeSourceParameterList list = registries
             .lookupOrThrow(Registries.MULTI_NOISE_BIOME_SOURCE_PARAMETER_LIST)
-            .getOrThrow(MultiNoiseBiomeSourceParameterLists.OVERWORLD).value();
+            .getOrThrow(preset.equals("nether") ? MultiNoiseBiomeSourceParameterLists.NETHER : MultiNoiseBiomeSourceParameterLists.OVERWORLD).value();
         JsonArray arr = new JsonArray();
         for (Pair<Climate.ParameterPoint, Holder<Biome>> p : list.parameters().values()) {
             Climate.ParameterPoint pt = p.getFirst();
@@ -240,13 +241,41 @@ public final class Oracle {
         }
         JsonObject root = new JsonObject();
         root.addProperty("version", SharedConstants.getCurrentVersion().name());
-        root.addProperty("preset", "minecraft:overworld");
+        root.addProperty("preset", "minecraft:" + preset);
         root.addProperty("quantization", "Climate.quantizeCoord: value * 10000, as long");
         root.add("entries", arr);
         try (PrintStream f = new PrintStream(new FileOutputStream(path), false, StandardCharsets.UTF_8)) {
             f.println(root);
         }
         out.println("wrote " + arr.size() + " entries to " + path);
+    }
+
+    /**
+     * dimgrid <seed> <nether|end> <x0> <z0> <w> <h> <step> <out.txt>: the dimension's biome at
+     * each block (x0 + i * step, y 64, z0 + j * step), one id per line, rows of w.
+     */
+    private static void dimgrid(String[] a) throws Exception {
+        long seed = Long.parseLong(a[1]);
+        boolean nether = a[2].equals("nether");
+        int x0 = Integer.parseInt(a[3]), z0 = Integer.parseInt(a[4]), w = Integer.parseInt(a[5]), h = Integer.parseInt(a[6]), step = Integer.parseInt(a[7]);
+        NoiseGeneratorSettings settings = registries.lookupOrThrow(Registries.NOISE_SETTINGS)
+            .getOrThrow(nether ? NoiseGeneratorSettings.NETHER : NoiseGeneratorSettings.END).value();
+        RandomState random = RandomState.create(registries.lookupOrThrow(Registries.NOISE), seed, settings);
+        Climate.Sampler sampler = random.createClimateSampler(SamplerContext.EMPTY_UNCACHED);
+        net.minecraft.world.level.biome.BiomeSource source = nether
+            ? MultiNoiseBiomeSource.createFromPreset(registries.lookupOrThrow(Registries.MULTI_NOISE_BIOME_SOURCE_PARAMETER_LIST).getOrThrow(MultiNoiseBiomeSourceParameterLists.NETHER))
+            : net.minecraft.world.level.biome.TheEndBiomeSource.create(registries.lookupOrThrow(Registries.BIOME));
+        net.minecraft.world.level.biome.BiomeResolver resolver = source.createResolver(sampler);
+        try (PrintStream f = new PrintStream(new BufferedOutputStream(new FileOutputStream(a[8])), false, StandardCharsets.UTF_8)) {
+            for (int j = 0; j < h; j++) {
+                for (int i = 0; i < w; i++) {
+                    int x = x0 + i * step, z = z0 + j * step;
+                    Holder<Biome> b = resolver.getNoiseBiome(x >> 2, 64 >> 2, z >> 2);
+                    f.println(b.unwrapKey().map(k -> k.identifier().toString()).orElse("?"));
+                }
+            }
+        }
+        out.println("wrote " + (w * h) + " cells to " + a[8]);
     }
 
     private static JsonArray range(Climate.Parameter p) {

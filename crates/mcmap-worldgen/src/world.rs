@@ -4,11 +4,14 @@ use crate::climate::quantize;
 use crate::terrain::Terrain;
 use crate::{BiomeId, Surface};
 use mcmap_data::pack::RawPack;
+use mcmap_data::Dimension;
 
 pub struct World {
     pub seed: i64,
     pub surface: Surface,
-    pub terrain: Terrain,
+    /// The Overworld's terrain shape; `None` in the Nether and the End, whose biomes are 2-D.
+    pub terrain: Option<Terrain>,
+    pub dimension: Dimension,
 }
 
 /// Sea level of the Overworld preset.
@@ -20,14 +23,20 @@ const SURFACE_BIAS: i32 = 13;
 
 impl World {
     pub fn new(pack: &RawPack, seed: i64) -> Result<World, String> {
-        Ok(World { seed, surface: Surface::new(pack, seed)?, terrain: Terrain::overworld(&pack.files, seed)? })
+        World::for_dimension(pack, seed, Dimension::Overworld)
+    }
+
+    pub fn for_dimension(pack: &RawPack, seed: i64, dimension: Dimension) -> Result<World, String> {
+        let terrain = if dimension == Dimension::Overworld { Some(Terrain::overworld(&pack.files, seed)?) } else { None };
+        Ok(World { seed, surface: Surface::for_dimension(pack, seed, dimension)?, terrain, dimension })
     }
 
     /// Biome at quart coordinates, at that height (`MultiNoiseBiomeSource.getNoiseBiome`).
     pub fn biome(&self, qx: i32, qy: i32, qz: i32, hint: &mut Option<u32>) -> BiomeId {
+        let Some(terrain) = &self.terrain else { return self.surface.biome_with_hint(qx, qz, hint) };
         let (x, y, z) = (qx << 2, qy << 2, qz << 2);
         let v = self.surface.climate.raw(x, y, z);
-        let d = self.terrain.depth(x, y, z);
+        let d = terrain.depth(x, y, z);
         let t = [quantize(v[0]), quantize(v[1]), quantize(v[2]), quantize(v[3]), quantize(d), quantize(v[4])];
         BiomeId(self.surface.tree.search(&t, hint))
     }
@@ -40,12 +49,18 @@ impl World {
 
     /// Estimated `getBaseHeight(WORLD_SURFACE_WG)`: the first free block above the terrain or the sea.
     pub fn surface_height(&self, x: i32, z: i32) -> i32 {
-        (self.terrain.surface(x, z) + SURFACE_BIAS).max(SEA_LEVEL)
+        match &self.terrain {
+            Some(t) => (t.surface(x, z) + SURFACE_BIAS).max(SEA_LEVEL),
+            None => SEA_LEVEL,
+        }
     }
 
     /// Estimated `getBaseHeight(OCEAN_FLOOR_WG)`: the first non-solid block above the terrain.
     pub fn floor_height(&self, x: i32, z: i32) -> i32 {
-        self.terrain.surface(x, z) + SURFACE_BIAS
+        match &self.terrain {
+            Some(t) => t.surface(x, z) + SURFACE_BIAS,
+            None => SEA_LEVEL,
+        }
     }
 }
 

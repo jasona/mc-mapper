@@ -207,7 +207,7 @@ fn hover_reads_the_block_under_the_pointer() {
 #[ignore]
 fn every_overworld_structure_has_a_layer() {
     let pack = mcmap_data::pack::RawPack::read(std::path::Path::new(&std::env::var("MCMAP_PACK").unwrap())).unwrap();
-    let e = crate::markers::Engine::new(&pack, 1).unwrap();
+    let e = crate::markers::Engine::new(&pack, 1, mcmap_data::Dimension::Overworld).unwrap();
     let mut missing = Vec::new();
     for set in &e.structures.sets {
         for (s, _) in &set.entries {
@@ -227,7 +227,7 @@ fn nearest_search_finds_a_village_and_selects_it() {
     let pack = std::sync::Arc::new(mcmap_data::pack::RawPack::read(std::path::Path::new(&path)).unwrap());
     let mut map = Map::new(None, None);
     map.markers.sync = true;
-    map.markers.set_engine(Some(std::sync::Arc::new(crate::markers::Engine::new(&pack, -7556262131344217808).unwrap())));
+    map.markers.set_engine(Some(std::sync::Arc::new(crate::markers::Engine::new(&pack, -7556262131344217808, mcmap_data::Dimension::Overworld).unwrap())));
     map.nearest("Village");
     assert!(map.take_marker_updates());
     let sel = map.selected.clone().expect("a village");

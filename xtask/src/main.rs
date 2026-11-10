@@ -144,6 +144,10 @@ fn extract(cli: &Cli, version: &str, no_oracle: bool, out: Option<PathBuf>) -> R
         let tmp = root().join("target/java").join(format!("templates-{version}.json"));
         oracle(&i, &v, &["templates".into(), tmp.to_string_lossy().into_owned()])?;
         files.insert(pack::TEMPLATES.to_owned(), std::fs::read_to_string(&tmp).map_err(|e| e.to_string())?);
+        // The Nether's biome table, like the Overworld's, is built in code.
+        let tmp = root().join("target/java").join(format!("nether-params-{version}.json"));
+        oracle(&i, &v, &["params".into(), tmp.to_string_lossy().into_owned(), "nether".into()])?;
+        files.insert(pack::NETHER_PARAMETERS.to_owned(), std::fs::read_to_string(&tmp).map_err(|e| e.to_string())?);
     }
     let p = RawPack { format: pack::FORMAT, version: version.to_owned(), files, overworld_parameters };
     let path = out.unwrap_or_else(|| pack::pack_path(version));

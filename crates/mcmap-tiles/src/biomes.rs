@@ -66,6 +66,17 @@ pub fn color(name: &str) -> [u8; 3] {
         "dripstone_caves" => 0x4e3012,
         "lush_caves" => 0x283c00,
         "deep_dark" => 0x031f29,
+        // Nether and End (cubiomes' table).
+        "nether_wastes" => 0x572526,
+        "soul_sand_valley" => 0x4d3a2e,
+        "crimson_forest" => 0x981a11,
+        "warped_forest" => 0x49907b,
+        "basalt_deltas" => 0x645f63,
+        "the_end" => 0x8080ff,
+        "small_end_islands" => 0x4b4bab,
+        "end_midlands" => 0xc9c959,
+        "end_highlands" => 0xb5b536,
+        "end_barrens" => 0x7070cc,
         _ => return fallback(key),
     };
     [(hex >> 16) as u8, (hex >> 8) as u8, hex as u8]

@@ -15,6 +15,9 @@ pub const FORMAT: u32 = 1;
 /// (`templates` command). Older packs lack it; structure positions then fall back to estimates.
 pub const TEMPLATES: &str = "mcmap/templates.json";
 
+/// Pack entry with the Nether's multi-noise parameter table (built in code, dumped by the oracle).
+pub const NETHER_PARAMETERS: &str = "mcmap/nether_parameters.json";
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct RawPack {
     pub format: u32,

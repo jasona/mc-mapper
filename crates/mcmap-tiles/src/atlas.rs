@@ -61,6 +61,24 @@ impl Rgba {
         Rgba { w: r.w, h: r.h, px }
     }
 
+    /// Nearest-neighbour resample into a `w` x `h` box, keeping the aspect, centred on transparency.
+    pub fn fit(&self, w: u32, h: u32) -> Rgba {
+        let k = (w as f64 / self.w as f64).min(h as f64 / self.h as f64);
+        let (sw, sh) = (((self.w as f64 * k).round() as u32).max(1), ((self.h as f64 * k).round() as u32).max(1));
+        let (ox, oy) = ((w - sw.min(w)) / 2, (h - sh.min(h)) / 2);
+        let mut px = vec![0u8; (w * h * 4) as usize];
+        for y in 0..sh.min(h) {
+            for x in 0..sw.min(w) {
+                let sx = ((x as f64 + 0.5) / k) as u32;
+                let sy = ((y as f64 + 0.5) / k) as u32;
+                let s = ((sy.min(self.h - 1) * self.w + sx.min(self.w - 1)) * 4) as usize;
+                let d = (((y + oy) * w + x + ox) * 4) as usize;
+                px[d..d + 4].copy_from_slice(&self.px[s..s + 4]);
+            }
+        }
+        Rgba { w, h, px }
+    }
+
     /// Enlarge by a whole factor, nearest-neighbour.
     pub fn upscale(&self, k: u32) -> Rgba {
         let k = k.max(1);

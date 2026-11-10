@@ -199,7 +199,12 @@ pub enum Kind {
     Mansion,
     Stronghold,
     RuinedPortal(Vec<PortalSetup>),
-    /// Nether and End structures, which the Overworld engine skips.
+    /// Nether fortress: the chunk's minimum corner at y 64.
+    Fortress,
+    /// End city: like a mansion (rotation, then the lowest of a 5 x 5 box offset 7), needing
+    /// y >= 60. The End's terrain height isn't ported; the islands density stands in for it.
+    EndCity,
+    /// Structures the engine doesn't model, which the Overworld engine skips.
     Other(String),
 }
 
@@ -295,6 +300,8 @@ impl Structure {
             "ocean_monument" => Kind::Monument,
             "woodland_mansion" => Kind::Mansion,
             "stronghold" => Kind::Stronghold,
+            "fortress" => Kind::Fortress,
+            "end_city" => Kind::EndCity,
             "ruined_portal" => {
                 let mut setups = Vec::new();
                 for su in v["setups"].as_array().ok_or("ruined portal without setups")? {
@@ -547,6 +554,18 @@ impl Structures {
                 let y = world.floor_height(mx, mz) - 1;
                 ok(mx, y, mz).then(|| found((mx, y, mz), true))
             }
+            Kind::Fortress => ok(x0, 64, z0).then(|| found((x0, 64, z0), false)),
+            Kind::EndCity => {
+                let (x, z) = ((cx << 4) + 7, (cz << 4) + 7);
+                // Stand-in for "the lowest corner is at y 60 or above": the islands density at
+                // all four corners. Fitted on two seeds (1,025 candidates): 0.15 agrees 84-86%
+                // with the game and misses 4 of the real cities.
+                let rot = r.next_int_bounded(4);
+                let (dx, dz) = match rot { 1 => (-5, 5), 2 => (-5, -5), 3 => (5, -5), _ => (5, 5) };
+                let islands = world.surface.climate.erosion();
+                let high = [(x, z), (x, z + dz), (x + dx, z), (x + dx, z + dz)].iter().all(|&(a, b)| islands.eval(a, 64, b) > 0.15);
+                (high && ok(x, 64, z)).then(|| found((x, 64, z), true))
+            }
             Kind::Mansion => {
                 let (x, z) = ((cx << 4) + 7, (cz << 4) + 7);
                 let rot = r.next_int_bounded(4);
@@ -582,6 +601,11 @@ impl Structures {
                 let b = g.portals.get(&format!("minecraft:ruined_portal/{name}"))?[mirror * 4 + rot];
                 let bb = [b[0] + x0, b[1], b[2] + z0, b[3] + x0, b[4], b[5] + z0];
                 let (cxb, czb) = (bb[0] + (bb[3] - bb[0] + 1) / 2, bb[2] + (bb[5] - bb[2] + 1) / 2);
+                if setup.placement == Vertical::InNether {
+                    // Nether biomes don't depend on y, so the biome check is exact; y is a guess.
+                    let marker = ((bb[0] + bb[3] + 1) / 2, (bb[2] + bb[5] + 1) / 2);
+                    return ok(x0, 64, z0).then(|| Found { marker, ..found((x0, 64, z0), false) });
+                }
                 let floor = setup.placement == Vertical::OnOceanFloor;
                 let h = |x: i32, z: i32| if floor { world.floor_height(x, z) } else { world.surface_height(x, z) } - 1;
                 let height = h(cxb, czb);
@@ -592,7 +616,6 @@ impl Structures {
                     Vertical::InMountain => within(&mut r, 70, height - span),
                     Vertical::Underground => within(&mut r, min_y, height - span),
                     Vertical::PartlyBuried => height - span + 2 + r.next_int_bounded(7),
-                    Vertical::InNether => return None,
                     _ => height,
                 };
                 // findSuitableY: down from j until three of the four corner columns are solid;

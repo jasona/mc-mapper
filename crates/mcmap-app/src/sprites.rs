@@ -46,6 +46,10 @@ impl Sprites {
         Sprites { images, uploaded: RefCell::new(HashMap::new()), markers }
     }
 
+    pub fn image(&self, sprite: usize) -> Option<&Rgba> {
+        self.images.get(sprite)
+    }
+
     pub fn len(&self) -> usize {
         self.images.len()
     }

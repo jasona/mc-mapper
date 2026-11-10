@@ -45,7 +45,8 @@ fn structures_match_the_game() {
         let seed = meta["seed"].as_i64().unwrap();
         let g = |k: &str| meta[k].as_i64().unwrap() as i32;
         let (cx0, cz0, cx1, cz1) = (g("cx0"), g("cz0"), g("cx1"), g("cz1"));
-        let world = World::new(&pack, seed).unwrap();
+        let dim = meta["dimension"].as_str().and_then(mcmap_data::Dimension::from_key).unwrap_or(mcmap_data::Dimension::Overworld);
+        let world = World::for_dimension(&pack, seed, dim).unwrap();
         if let (Some(sx), Some(sz)) = (meta["spawn_x"].as_i64(), meta["spawn_z"].as_i64()) {
             let got = mcmap_worldgen::world::SpawnFinder::overworld(&pack.files, seed).unwrap().find();
             println!("  spawn: got {got:?} want ({sx}, {sz})");
@@ -72,6 +73,9 @@ fn structures_match_the_game() {
         for set in &st.sets {
             let ta = tallies.entry(set.id.clone()).or_default();
             if let Placement::Rings { .. } = set.placement {
+                if dim != mcmap_data::Dimension::Overworld {
+                    continue;
+                }
                 let got = st.rings(&world, set);
                 let w = rings.get(&set.id).cloned().unwrap_or_default();
                 let bad = got.iter().zip(&w).filter(|(a, b)| a != b).count() + got.len().abs_diff(w.len());
@@ -84,6 +88,10 @@ fn structures_match_the_game() {
                 ring_bad += bad;
                 continue;
             }
+            // The oracle lists only the sets that can occur in the dimension.
+            if dim != mcmap_data::Dimension::Overworld && !want.keys().any(|k| k.0 == set.id) {
+                continue;
+            }
             let mut ours = BTreeSet::new();
             for cz in cz0..=cz1 {
                 for cx in cx0..=cx1 {
@@ -94,7 +102,7 @@ fn structures_match_the_game() {
             }
             let theirs: BTreeSet<(i32, i32)> = want.keys().filter(|k| k.0 == set.id).map(|k| (k.1, k.2)).collect();
             if set.entries.iter().all(|e| matches!(e.0.kind, mcmap_worldgen::structure::Kind::Other(_))) {
-                continue; // Nether and End sets: the oracle runs the Overworld only.
+                continue; // Structures the engine doesn't model (nether fossils).
             }
             ta.placements += theirs.len();
             ta.placement_misses += ours.symmetric_difference(&theirs).count();

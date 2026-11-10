@@ -58,16 +58,24 @@ fn init() -> Map {
             None
         }
     });
+    let mut features = features::Features::load(&art_dir()).map_err(|e| eprintln!("mcmap: no feature picker ({e})")).ok();
+    if let (Some(f), Some(sp)) = (&mut features, &sprites) {
+        for &(dim, label, sprite) in markers::EXTRA_PICKER {
+            if let Some(img) = sp.image(sprite) {
+                f.push(label, img, dim);
+            }
+        }
+    }
     let mut map = Map::new(sprites, world);
     map.sprite_demo = std::env::var_os("MCMAP_SPRITE_DEMO").is_some();
     if let Some(p) = &pack {
-        match markers::Engine::new(p, seed) {
+        match markers::Engine::new(p, seed, mcmap_data::Dimension::Overworld) {
             Ok(e) => map.markers.set_engine(Some(Arc::new(e))),
             Err(e) => eprintln!("mcmap: structures: {e}"),
         }
     }
     map.pack = pack;
-    map.features = features::Features::load(&art_dir()).map_err(|e| eprintln!("mcmap: no feature picker ({e})")).ok();
+    map.features = features;
     map
 }
 
@@ -113,6 +121,13 @@ fn sync(s: &mut Map) {
     s.markers.sync = true;
 }
 
+fn all_layers(s: &mut Map) {
+    if let Some(f) = &mut s.features {
+        let labels: Vec<String> = f.list.iter().map(|x| x.label.clone()).collect();
+        f.on.extend(labels);
+    }
+}
+
 fn main() {
     rune::run(AppSpec::<Map> {
         scenes: &[
@@ -137,7 +152,7 @@ fn main() {
                 sync(s);
                 if let Some(p) = s.pack.clone() {
                     let seed = s.tiles.world().map(|w| w.seed).unwrap_or(DEFAULT_SEED);
-                    s.markers.set_engine(markers::Engine::new(&p, seed).ok().map(Arc::new));
+                    s.markers.set_engine(markers::Engine::new(&p, seed, mcmap_data::Dimension::Overworld).ok().map(Arc::new));
                 }
                 if let Some(f) = &mut s.features {
                     f.on.clear();
@@ -145,6 +160,21 @@ fn main() {
                         f.on.insert(l.to_owned());
                     }
                 }
+            }),
+            // The Nether under the reference view (an eighth of its coordinates) and the End's
+            // outer islands, every layer on.
+            ("nether", |s| {
+                sync(s);
+                s.set_dimension(mcmap_data::Dimension::Nether);
+                s.camera.zoom = 0.25;
+                all_layers(s);
+            }),
+            ("end", |s| {
+                sync(s);
+                s.set_dimension(mcmap_data::Dimension::End);
+                s.camera.center = [1600.0, 0.0];
+                s.camera.zoom = 0.2;
+                all_layers(s);
             }),
             // The reference capture's view and size (1133 x 566 below the toolbar) with no
             // overlays, for the M2 gate: compare with art/seed-map/reference/biomes.png.

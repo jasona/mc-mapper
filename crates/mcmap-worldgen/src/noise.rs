@@ -45,6 +45,30 @@ fn lerp3(dx: f32, dy: f32, dz: f32, a: f32, b: f32, c: f32, d: f32, e: f32, f: f
     lerp(dz, lerp(dy, lerp(dx, a, b), lerp(dx, c, d)), lerp(dy, lerp(dx, e, f), lerp(dx, g, h)))
 }
 
+/// What noise construction draws from: `RandomSource` in either algorithm.
+pub trait NoiseRand {
+    fn next_double(&mut self) -> f64;
+    fn next_int_bounded(&mut self, bound: i32) -> i32;
+}
+
+impl NoiseRand for Xoroshiro {
+    fn next_double(&mut self) -> f64 {
+        Xoroshiro::next_double(self)
+    }
+    fn next_int_bounded(&mut self, bound: i32) -> i32 {
+        Xoroshiro::next_int_bounded(self, bound)
+    }
+}
+
+impl NoiseRand for crate::random::Legacy {
+    fn next_double(&mut self) -> f64 {
+        crate::random::Legacy::next_double(self)
+    }
+    fn next_int_bounded(&mut self, bound: i32) -> i32 {
+        crate::random::Legacy::next_int_bounded(self, bound)
+    }
+}
+
 /// One octave: the game's `PerlinNoise` (improved Perlin noise with a random offset).
 #[derive(Clone, Debug)]
 pub struct Perlin {
@@ -55,7 +79,7 @@ pub struct Perlin {
 }
 
 impl Perlin {
-    pub fn new(r: &mut Xoroshiro) -> Perlin {
+    pub fn new(r: &mut impl NoiseRand) -> Perlin {
         let ox = r.next_double() * 256.0;
         let oy = r.next_double() * 256.0;
         let oz = r.next_double() * 256.0;
@@ -208,6 +232,65 @@ impl NormalNoise {
         Ok(NormalNoise { layers })
     }
 
+    /// `NormalNoise.createForLegacyNetherBiome`: two `LegacyFbmInitializer` stacks from one
+    /// legacy random (seed + 0 for temperature, + 1 for vegetation), octaves created from the
+    /// highest index down with 262 draws skipped for each octave outside the amplitude list.
+    pub fn legacy_nether(p: &NoiseParams, r: &mut crate::random::Legacy) -> Result<NormalNoise, String> {
+        let normalize = match p.normalize.as_ref().and_then(|v| v.as_str()) {
+            None | Some("enabled") | Some("minecraft:enabled") => true,
+            Some(other) => return Err(format!("noise normalization {other:?} is not supported yet")),
+        };
+        let octaves = build_octaves(p, normalize);
+        let sum = java_double_sum(octaves.iter().map(|o| o.amplitude.abs()));
+        let factor = normalization_factor(sum, &octaves);
+        let mods: Vec<f64> = if p.amplitude_modifiers.is_empty() { vec![1.0; p.octave_count as usize] } else { p.amplitude_modifiers.clone() };
+        let stack = |r: &mut crate::random::Legacy| -> Result<Vec<Layer>, String> {
+            let n = mods.len() as i32;
+            let top = -p.base_octave;
+            let mut noises: Vec<Option<Perlin>> = vec![None; n as usize];
+            let first = Perlin::new(r);
+            if top >= 0 && top < n && mods[top as usize] != 0.0 {
+                noises[top as usize] = Some(first);
+            }
+            let mut j = top - 1;
+            while j >= 0 {
+                if j < n && mods[j as usize] != 0.0 {
+                    noises[j as usize] = Some(Perlin::new(r));
+                } else {
+                    for _ in 0..262 {
+                        r.next_int();
+                    }
+                }
+                j -= 1;
+            }
+            if top < n - 1 {
+                return Err("positive octaves are not supported by the legacy initializer".into());
+            }
+            let mut freq = 2f64.powf(-(top as f64));
+            let mut amp = 2f64.powf((n - 1) as f64) / (2f64.powf(n as f64) - 1.0);
+            let mut out = Vec::new();
+            for (i, noise) in noises.into_iter().enumerate() {
+                if let Some(noise) = noise {
+                    out.push(Layer { noise, frequency: freq, amplitude: (amp * mods[i]) as f32 });
+                }
+                freq *= 2.0;
+                amp /= 2.0;
+            }
+            Ok(out)
+        };
+        let a = stack(r)?;
+        let b = stack(r)?;
+        let f5 = (factor * p.base_amplitude) as f32;
+        let mut layers = Vec::with_capacity(a.len() * 2);
+        for l in a {
+            layers.push(Layer { noise: l.noise, frequency: l.frequency * 1.0, amplitude: l.amplitude * f5 });
+        }
+        for l in b {
+            layers.push(Layer { noise: l.noise, frequency: l.frequency * 1.018_126_888_217_522_7, amplitude: l.amplitude * f5 });
+        }
+        Ok(NormalNoise { layers })
+    }
+
     #[inline]
     pub fn get(&self, x: f64, y: f64, z: f64) -> f32 {
         let mut s = 0f32;
@@ -217,4 +300,91 @@ impl NormalNoise {
         }
         s
     }
+}
+
+/// `SimplexNoise` (2-D), as the End islands use it: 26.x returns `f32`, computes in `f64`.
+#[derive(Clone, Debug)]
+pub struct Simplex {
+    perms: [u8; 256],
+    ox: f64,
+    oy: f64,
+}
+
+impl Simplex {
+    /// `new SimplexNoise(random, zeroOffset)`: three offsets drawn either way, scaled by 0 or 256.
+    pub fn new(r: &mut crate::random::Legacy, zero_offset: bool) -> Simplex {
+        let scale = if zero_offset { 0.0 } else { 256.0 };
+        let ox = r.next_double() * scale;
+        let oy = r.next_double() * scale;
+        let _oz = r.next_double() * scale;
+        let mut perms = [0u8; 256];
+        for (i, p) in perms.iter_mut().enumerate() {
+            *p = i as u8;
+        }
+        for i in 0..256 {
+            let j = r.next_int_bounded(256 - i as i32) as usize;
+            perms.swap(i, i + j);
+        }
+        Simplex { perms, ox, oy }
+    }
+
+    #[inline]
+    fn p(&self, i: i32) -> i32 {
+        self.perms[(i & 255) as usize] as i32
+    }
+
+    #[inline]
+    fn corner(h: i32, x: f64, y: f64) -> f64 {
+        let t = 0.5 - x * x - y * y - 0.0 * 0.0;
+        if t < 0.0 {
+            0.0
+        } else {
+            let t = t * t;
+            let g = GRADIENT[h as usize];
+            t * t * (g[0] as f64 * x + g[1] as f64 * y + g[2] as f64 * 0.0)
+        }
+    }
+
+    pub fn get(&self, x: f64, y: f64) -> f32 {
+        let sqrt3 = 3f64.sqrt();
+        let f2 = 0.5 * (sqrt3 - 1.0);
+        let g2 = (3.0 - sqrt3) / 6.0;
+        let (x, y) = (x + self.ox, y + self.oy);
+        let s = (x + y) * f2;
+        let i = (x + s).floor() as i32;
+        let j = (y + s).floor() as i32;
+        let t = (i + j) as f64 * g2;
+        let x0 = x - (i as f64 - t);
+        let y0 = y - (j as f64 - t);
+        let (i1, j1) = if x0 > y0 { (1, 0) } else { (0, 1) };
+        let x1 = x0 - i1 as f64 + g2;
+        let y1 = y0 - j1 as f64 + g2;
+        let x2 = x0 - 1.0 + 2.0 * g2;
+        let y2 = y0 - 1.0 + 2.0 * g2;
+        let (ii, jj) = (i & 255, j & 255);
+        let h0 = self.p(ii + self.p(jj)) % 12;
+        let h1 = self.p(ii + i1 + self.p(jj + j1)) % 12;
+        let h2 = self.p(ii + 1 + self.p(jj + 1)) % 12;
+        let n = Self::corner(h0, x0, y0) + Self::corner(h1, x1, y1) + Self::corner(h2, x2, y2);
+        (70.0 * n) as f32
+    }
+}
+
+/// `EndIslandFunction.getHeightValue`: the outer islands' height at (x / 8, z / 8).
+pub fn end_island_height(n: &Simplex, x: i32, z: i32) -> f32 {
+    let (i, j) = (x / 2, z / 2);
+    let (k, l) = (x % 2, z % 2);
+    let mut h = -100.0f32;
+    for m in -12..=12 {
+        for o in -12..=12 {
+            let (a, b) = ((i + m) as i64, (j + o) as i64);
+            if a * a + b * b > 4096 && n.get(a as f64, b as f64) < -0.9 {
+                let f = ((a as f32).abs() * 3439.0 + (b as f32).abs() * 147.0) % 13.0 + 9.0;
+                let (g, q) = ((k - m * 2) as f32, (l - o * 2) as f32);
+                let v = (100.0 - (g * g + q * q).sqrt() * f).clamp(-100.0, 80.0);
+                h = h.max(v);
+            }
+        }
+    }
+    h
 }
